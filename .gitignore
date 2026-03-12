@@ -1,0 +1,21 @@
+# Config with secrets (template config.example.json is committed)
+config.json
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+#Testing
+Testing/

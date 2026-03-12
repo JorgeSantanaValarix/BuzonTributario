@@ -1,0 +1,43 @@
+{
+  "_comment": "Selectors for SAT Buzón login page. Only login-related keys are defined here. Other flows reuse default mapping if needed.",
+  "_login_e_firma_button": [
+    "button:has-text('e.firma')",
+    "button:has-text('E.FIRMA')",
+    "button:has-text('E.firma')",
+    "text=/\\be\\.firma\\b/i",
+    "[value='e.firma']",
+    "input[type='submit'][value='e.firma']"
+  ],
+  "_login_cer_file_input": [
+    "input[type='file'][accept*='.cer']",
+    "input[type='file'][name*='certificado']",
+    "input[type='file'][name*='cer']",
+    "input[type='file']"
+  ],
+  "_login_key_file_input": [
+    "input[type='file'][accept*='.key']",
+    "input[type='file'][name*='clave']",
+    "input[type='file'][name*='key']",
+    "input[type='file']"
+  ],
+  "_login_password_input": [
+    "input[type='password']",
+    "input[placeholder*='Contraseña']",
+    "input[name*='contrasena']",
+    "input[name*='contraseña']",
+    "input[name*='password']"
+  ],
+  "_login_rfc_input": [
+    "input[placeholder*='RFC']",
+    "input[name*='rfc']",
+    "input#rfc"
+  ],
+  "_login_enviar_button": [
+    "button:has-text('Enviar')",
+    "input[type='submit'][value='Enviar']",
+    "input[type='submit'][value*='Enviar']",
+    "input[value='Enviar']",
+    "button[type='submit']",
+    "[role='button']:has-text('Enviar')"
+  ]
+}

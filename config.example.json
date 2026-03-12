@@ -1,0 +1,15 @@
+{
+  "_comment": "Copy this file to config.json and fill in your local e.firma paths and password. No API integration is used yet.",
+  "buzon_sat_portal_url": "https://wwwmat.sat.gob.mx/personas/iniciar-sesion",
+  "log_file": "buzon_tributario.log",
+  "test_cer_path": "C:\\path\\to\\your.cer",
+  "test_key_path": "C:\\path\\to\\Claveprivada_FIEL_XXX.key",
+  "test_password": "your_e.firma_password",
+  "sat_ui": {},
+  "buzon_api": {
+    "base_url": "",
+    "company_id": 0,
+    "branch_id": "1",
+    "poll_interval_seconds": 60
+  }
+}
