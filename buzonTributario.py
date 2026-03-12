@@ -50,6 +50,7 @@ def load_buzon_config(config_path: str | None) -> dict:
     key_path = raw.get("test_key_path") or ""
     password = raw.get("test_password") or ""
     sat_ui = raw.get("sat_ui") or {}
+    download_dir = raw.get("download_dir") or ""
 
     missing = []
     if not cer_path:
@@ -64,12 +65,22 @@ def load_buzon_config(config_path: str | None) -> dict:
             + ", ".join(missing)
         )
 
+    # Normalize download directory (for PDFs from Mis comunicados)
+    if not download_dir:
+        download_dir_path = SCRIPT_DIR / "downloads"
+    else:
+        download_dir_path = Path(download_dir)
+        if not download_dir_path.is_absolute():
+            download_dir_path = SCRIPT_DIR / download_dir_path
+    download_dir_path.mkdir(parents=True, exist_ok=True)
+
     return {
         "portal_url": portal_url,
         "cer_path": cer_path,
         "key_path": key_path,
         "password": password,
         "sat_ui": sat_ui,
+        "download_dir": str(download_dir_path),
         "raw": raw,
         "config_path": str(cfg_path),
     }
@@ -521,48 +532,59 @@ def read_comunicados_table(page) -> None:
       - Else log each row's columns.
     """
     logging.info("Phase 3: reading 'Mis comunicados' table...")
+    # Focus only on 'Mensajes no leídos' section: for each message, log the label text
+    # and click '+' then the 'aqui' link to download its PDF.
 
+    # Find all 'aqui' links within the page (we treat each as one message in 'Mensajes no leídos').
+    links_info = []
     for frame in _iter_frames(page):
         try:
-            no_results = frame.locator("text=/No se encontraron resultados/i")
-            if no_results.count() > 0:
-                logging.info("Mis comunicados: No se encontraron resultados")
-                return
+            links = frame.locator("a:has-text('aqui')")
+            count = links.count()
+            for i in range(count):
+                link = links.nth(i)
+                label_text = ""
+                try:
+                    # Get the text of the closest row/container that holds the message label.
+                    container = link.locator("xpath=ancestor::tr[1]")
+                    if container.count() == 0:
+                        container = link.locator("xpath=ancestor::*[1]")
+                    if container.count() > 0:
+                        label_text = (container.first.inner_text() or "").strip()
+                except Exception:
+                    label_text = ""
+                links_info.append((frame, link, label_text))
         except Exception:
             continue
 
-    rows_data: list[dict] = []
-    for frame in _iter_frames(page):
-        try:
-            table = frame.locator("table").first
-            if table.count() == 0:
-                continue
-            trs = table.locator("tr")
-            row_count = trs.count()
-            if row_count <= 1:
-                continue
-            headers = [h.inner_text().strip() for h in trs.nth(0).locator("th, td").all()]
-            for i in range(1, row_count):
-                tds = trs.nth(i).locator("td").all()
-                if not tds:
-                    continue
-                values = [td.inner_text().strip() for td in tds]
-                row = {}
-                for idx, val in enumerate(values):
-                    key = headers[idx] if idx < len(headers) and headers[idx] else f"col_{idx}"
-                    row[key] = val
-                rows_data.append(row)
-            break
-        except Exception:
-            continue
-
-    if not rows_data:
-        logging.info("Mis comunicados: table found but no data rows detected.")
+    if not links_info:
+        logging.info("Mis comunicados: no 'aqui' links found under 'Mensajes no leídos' (no unread messages).")
         return
 
-    logging.info("Mis comunicados: found %d row(s).", len(rows_data))
-    for i, row in enumerate(rows_data, start=1):
-        logging.info("Mis comunicados row %d: %s", i, row)
+    logging.info("Mis comunicados: found %d unread message(s) with 'aqui' link.", len(links_info))
+
+    # Download PDFs for each unread message.
+    # The download directory is obtained from the config (stored in _run_context['download_dir'] via cfg).
+    download_dir = None
+    if _run_context:
+        download_dir = _run_context.get("download_dir")
+
+    for idx, (frame, link, label_text) in enumerate(links_info, start=1):
+        safe_label = " ".join(label_text.split()) if label_text else "(sin texto)"
+        logging.info("Mis comunicados mensaje %d etiqueta: %s", idx, safe_label)
+        try:
+            with frame.page.expect_download() as dl_info:
+                link.click()
+            download = dl_info.value
+            suggested = download.suggested_filename or f"comunicado_{idx}.pdf"
+            if download_dir:
+                target_path = Path(download_dir) / suggested
+            else:
+                target_path = SCRIPT_DIR / suggested
+            download.save_as(str(target_path))
+            logging.info("Mis comunicados mensaje %d: PDF descargado en %s", idx, target_path)
+        except Exception as e:
+            logging.warning("Mis comunicados mensaje %d: error al descargar PDF: %s", idx, e)
 
 
 def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str) -> bool:
@@ -591,11 +613,17 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
     logging.info("Using mapping: %s", mapping_file)
     logging.info("Portal URL: %s", portal_url)
 
+    # Keep download directory in run context for use by Mis comunicados PDF downloads.
+    global _run_context
+    if _run_context is None:
+        _run_context = {}
+    _run_context["download_dir"] = cfg["download_dir"]
+
     for attempt in range(2):
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=False)
-                context = browser.new_context()
+                context = browser.new_context(accept_downloads=True)
                 page = context.new_page()
                 try:
                     login_buzon(page, efirma, mapping, base_url=portal_url)
