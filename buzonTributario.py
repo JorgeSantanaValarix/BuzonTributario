@@ -24,6 +24,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_PORTAL_URL = "https://wwwmat.sat.gob.mx/personas/iniciar-sesion"
 
 _run_context: dict | None = None
+RETRY_WAIT_SECONDS = 60
 
 
 def load_buzon_config(config_path: str | None) -> dict:
@@ -264,39 +265,45 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
     logging.info("Using mapping: %s", mapping_file)
     logging.info("Portal URL: %s", portal_url)
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context()
-            page = context.new_page()
-            try:
-                login_buzon(page, efirma, mapping, base_url=portal_url)
-                # Basic post-login sanity check: log current URL, then leave browser
-                # open for 10 seconds for manual inspection before closing.
-                page.wait_for_timeout(1000)
-                current_url = page.url or ""
-                logging.info("Post-login URL: %s", current_url)
-                logging.info("Keeping browser open 10 seconds for inspection...")
-                page.wait_for_timeout(10000)
-                logging.info("Inspection period complete; closing browser.")
-                success = True
-            except KeyboardInterrupt:
-                logging.info("KeyboardInterrupt detected, running cleanup.")
-                _cleanup_on_interrupt(page, context, browser)
-                raise
-            finally:
-                # If cleanup already closed these, calls will be no-ops.
-                for obj_name, obj in (("page", page), ("context", context), ("browser", browser)):
-                    try:
-                        if obj is not None:
-                            obj.close()
-                    except Exception as e:
-                        logging.debug("%s close error in finalizer: %s", obj_name, e)
-        return success
-    except Exception as exc:
-        logging.exception("Error during BuzonTributario login: %s", exc)
-        print(f"Error during BuzonTributario login: {exc}", file=sys.stderr)
-        return False
+    for attempt in range(2):
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=False)
+                context = browser.new_context()
+                page = context.new_page()
+                try:
+                    login_buzon(page, efirma, mapping, base_url=portal_url)
+                    # Basic post-login sanity check: log current URL, then leave browser
+                    # open for 10 seconds for manual inspection before closing.
+                    page.wait_for_timeout(1000)
+                    current_url = page.url or ""
+                    logging.info("Post-login URL: %s", current_url)
+                    logging.info("Keeping browser open 10 seconds for inspection...")
+                    page.wait_for_timeout(10000)
+                    logging.info("Inspection period complete; closing browser.")
+                    success = True
+                except KeyboardInterrupt:
+                    logging.info("KeyboardInterrupt detected, running cleanup.")
+                    _cleanup_on_interrupt(page, context, browser)
+                    raise
+                finally:
+                    # If cleanup already closed these, calls will be no-ops.
+                    for obj_name, obj in (("page", page), ("context", context), ("browser", browser)):
+                        try:
+                            if obj is not None:
+                                obj.close()
+                        except Exception as e:
+                            logging.debug("%s close error in finalizer: %s", obj_name, e)
+            return success
+        except Exception as exc:
+            logging.exception("Error during BuzonTributario login: %s", exc)
+            print(f"Error during BuzonTributario login: {exc}", file=sys.stderr)
+            if attempt == 0:
+                logging.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
+                time.sleep(RETRY_WAIT_SECONDS)
+            else:
+                return False
+    return False
 
 
 def _setup_logging(log_file: str) -> None:
