@@ -418,6 +418,139 @@ def read_lineas_de_captura_table(page) -> None:
         logging.info("Líneas de captura row %d: %s", i, row)
 
 
+def read_notificaciones_table(page) -> None:
+    """
+    Read 'Mis notificaciones' table.
+
+    Columns: Folio del acto administrativo, Autoridad emisora, Acto administrativo,
+    Fecha de aviso, Aviso, Documento.
+    When there is no data:
+      - Filters for Autoridad emisora / Acto administrativo only have 'Seleccione'
+      - Table body shows 'No se encontraron resultados'
+    """
+    logging.info("Phase 3: reading 'Mis notificaciones' table...")
+
+    # Check filters first (best-effort, logs only).
+    for frame in _iter_frames(page):
+        try:
+            selects = frame.locator("select").all()
+        except Exception:
+            continue
+        for sel in selects:
+            label_text = ""
+            try:
+                label = sel.locator("xpath=preceding::label[1]")
+                if label.count() > 0:
+                    label_text = (label.first.inner_text() or "").strip()
+            except Exception:
+                label_text = ""
+            try:
+                options = [o.inner_text().strip() for o in sel.locator("option").all()]
+            except Exception:
+                options = []
+            if not options:
+                continue
+            if label_text and any(k in label_text for k in ["Autoridad emisora", "Acto administrativo"]):
+                logging.info("Filtro '%s' opciones: %s", label_text, options)
+        # Only inspect first frame for filters; avoid duplicate logs.
+        break
+
+    # Check for 'No se encontraron resultados'.
+    for frame in _iter_frames(page):
+        try:
+            no_results = frame.locator("text=/No se encontraron resultados/i")
+            if no_results.count() > 0:
+                logging.info("Mis notificaciones: No se encontraron resultados")
+                return
+        except Exception:
+            continue
+
+    # Otherwise, read the table rows similarly to Líneas de captura.
+    rows_data: list[dict] = []
+    for frame in _iter_frames(page):
+        try:
+            table = frame.locator("table").first
+            if table.count() == 0:
+                continue
+            trs = table.locator("tr")
+            row_count = trs.count()
+            if row_count <= 1:
+                continue
+            headers = [h.inner_text().strip() for h in trs.nth(0).locator("th, td").all()]
+            for i in range(1, row_count):
+                tds = trs.nth(i).locator("td").all()
+                if not tds:
+                    continue
+                values = [td.inner_text().strip() for td in tds]
+                row = {}
+                for idx, val in enumerate(values):
+                    key = headers[idx] if idx < len(headers) and headers[idx] else f"col_{idx}"
+                    row[key] = val
+                rows_data.append(row)
+            break
+        except Exception:
+            continue
+
+    if not rows_data:
+        logging.info("Mis notificaciones: table found but no data rows detected.")
+        return
+
+    logging.info("Mis notificaciones: found %d row(s).", len(rows_data))
+    for i, row in enumerate(rows_data, start=1):
+        logging.info("Mis notificaciones row %d: %s", i, row)
+
+
+def read_comunicados_table(page) -> None:
+    """
+    Read 'Mis comunicados' table in a generic way:
+      - If 'No se encontraron resultados' is present, log it.
+      - Else log each row's columns.
+    """
+    logging.info("Phase 3: reading 'Mis comunicados' table...")
+
+    for frame in _iter_frames(page):
+        try:
+            no_results = frame.locator("text=/No se encontraron resultados/i")
+            if no_results.count() > 0:
+                logging.info("Mis comunicados: No se encontraron resultados")
+                return
+        except Exception:
+            continue
+
+    rows_data: list[dict] = []
+    for frame in _iter_frames(page):
+        try:
+            table = frame.locator("table").first
+            if table.count() == 0:
+                continue
+            trs = table.locator("tr")
+            row_count = trs.count()
+            if row_count <= 1:
+                continue
+            headers = [h.inner_text().strip() for h in trs.nth(0).locator("th, td").all()]
+            for i in range(1, row_count):
+                tds = trs.nth(i).locator("td").all()
+                if not tds:
+                    continue
+                values = [td.inner_text().strip() for td in tds]
+                row = {}
+                for idx, val in enumerate(values):
+                    key = headers[idx] if idx < len(headers) and headers[idx] else f"col_{idx}"
+                    row[key] = val
+                rows_data.append(row)
+            break
+        except Exception:
+            continue
+
+    if not rows_data:
+        logging.info("Mis comunicados: table found but no data rows detected.")
+        return
+
+    logging.info("Mis comunicados: found %d row(s).", len(rows_data))
+    for i, row in enumerate(rows_data, start=1):
+        logging.info("Mis comunicados row %d: %s", i, row)
+
+
 def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str) -> bool:
     """
     Run Buzón login flow for the given mode ("test-login" or "test-full").
@@ -452,11 +585,23 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                 page = context.new_page()
                 try:
                     login_buzon(page, efirma, mapping, base_url=portal_url)
-                    # If mode is test-full, perform Mis expedientes -> Mis documentos
-                    # (which internally does Cobranza -> Líneas de captura -> read table).
-                    if mode == "test-full":
+                    # Navigation per mode:
+                    # - test-login: login only (no navigation)
+                    # - test-documentos: Mis expedientes -> Mis documentos (which does
+                    #   Cobranza -> Líneas de captura -> read table)
+                    # - test-notificaciones: Mis expedientes -> Mis notificaciones -> read table
+                    # - test-comunicados: Mis expedientes -> Mis comunicados -> read table
+                    # - test-full: run all three in sequence, reusing same session
+                    if mode in ("test-documentos", "test-notificaciones", "test-comunicados", "test-full"):
                         open_mis_expedientes_menu(page)
-                        go_to_mis_documentos(page)
+                        if mode in ("test-documentos", "test-full"):
+                            go_to_mis_documentos(page)
+                        if mode in ("test-notificaciones", "test-full"):
+                            go_to_mis_notificaciones(page)
+                            read_notificaciones_table(page)
+                        if mode in ("test-comunicados", "test-full"):
+                            go_to_mis_comunicados(page)
+                            read_comunicados_table(page)
 
                     # Basic post-login sanity check: log current URL, then leave browser
                     # open for 10 seconds for manual inspection before closing.
@@ -557,19 +702,47 @@ def main() -> None:
     parser.add_argument(
         "--test-full",
         action="store_true",
-        help="Reserved: same as --test-login for now; future extension to additional Buzón flows.",
+        help="Run Mis documentos (Cobranza -> Líneas de captura), Mis notificaciones, and Mis comunicados in sequence after login.",
+    )
+    parser.add_argument(
+        "--test-documentos",
+        action="store_true",
+        help="After login, go to Mis expedientes -> Mis documentos -> Cobranza -> Líneas de captura and read the table.",
+    )
+    parser.add_argument(
+        "--test-notificaciones",
+        action="store_true",
+        help="After login, go to Mis expedientes -> Mis notificaciones and read the notifications table.",
+    )
+    parser.add_argument(
+        "--test-comunicados",
+        action="store_true",
+        help="After login, go to Mis expedientes -> Mis comunicados and read the comunicados table.",
     )
 
     args = parser.parse_args()
 
-    if not args.test_login and not args.test_full:
+    selected_modes = [
+        flag
+        for flag, enabled in [
+            ("test-login", args.test_login),
+            ("test-full", args.test_full),
+            ("test-documentos", getattr(args, "test_documentos", False)),
+            ("test-notificaciones", getattr(args, "test_notificaciones", False)),
+            ("test-comunicados", getattr(args, "test_comunicados", False)),
+        ]
+        if enabled
+    ]
+
+    if not selected_modes:
         parser.print_help(sys.stderr)
         sys.exit(2)
-    if args.test_login and args.test_full:
-        print("Error: Please specify only one of --test-login or --test-full.", file=sys.stderr)
+
+    if len(selected_modes) > 1:
+        print("Error: Please specify only one test mode (--test-login, --test-full, --test-documentos, --test-notificaciones, or --test-comunicados).", file=sys.stderr)
         sys.exit(2)
 
-    mode = "test-full" if args.test_full else "test-login"
+    mode = selected_modes[0]
     success = run_buzon_login(args.config, args.mapping, mode=mode)
     sys.exit(0 if success else 1)
 
