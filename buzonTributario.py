@@ -671,13 +671,30 @@ def _cleanup_on_interrupt(page, context, browser) -> None:
     global _run_context
     logged_in = _run_context.get("logged_in", False) if _run_context else False
     if logged_in:
-        logging.info("Cleanup: user is logged in, attempting to click 'Cerrar sesión'...")
+        logging.info("Cleanup: user is logged in, handling possible survey popup then logging out...")
         try:
-            # Try both button and link variants for Cerrar sesión across all frames.
+            # First, handle optional satisfaction survey popup: "¿Desea contestar la encuesta de satisfacción?"
+            survey_no_selectors = [
+                "button:has-text('No')",
+                "text=/\\bNo\\b/i",
+            ]
+            for frame in _iter_frames(page):
+                try:
+                    dialog = frame.locator("text=/encuesta de satisfacci[oó]n/i")
+                    if dialog.count() > 0:
+                        logging.info("Cleanup: satisfaction survey popup detected, clicking 'No'.")
+                        _try_click(page, survey_no_selectors)
+                        page.wait_for_timeout(500)
+                        break
+                except Exception:
+                    continue
+
+            # Then click 'Cerrar sesión' across frames.
             logout_selectors = [
                 "button:has-text('Cerrar sesión')",
                 "a:has-text('Cerrar sesión')",
                 "[role='button']:has-text('Cerrar sesión')",
+                "text=/Cerrar sesi[oó]n/i",
             ]
             _try_click(page, logout_selectors)
             # Give SAT a moment to process logout and redirect.
