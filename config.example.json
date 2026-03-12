@@ -5,6 +5,7 @@
   "test_cer_path": "C:\\path\\to\\your.cer",
   "test_key_path": "C:\\path\\to\\Claveprivada_FIEL_XXX.key",
   "test_password": "your_e.firma_password",
+  "download_dir": "",
   "sat_ui": {},
   "buzon_api": {
     "base_url": "",
