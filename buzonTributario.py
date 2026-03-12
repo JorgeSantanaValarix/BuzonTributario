@@ -492,7 +492,21 @@ def read_notificaciones_table(page) -> None:
             continue
 
     if not rows_data:
-        logging.info("Mis notificaciones: table found but no data rows detected.")
+        # No data rows; explicitly check again for the "No se encontraron resultados" message
+        # so logs match what the user sees on screen.
+        found_no_results_text = False
+        for frame in _iter_frames(page):
+            try:
+                no_results = frame.locator("text=/No se encontraron resultados/i")
+                if no_results.count() > 0:
+                    logging.info("Mis notificaciones: No se encontraron resultados")
+                    found_no_results_text = True
+                    break
+            except Exception:
+                continue
+
+        if not found_no_results_text:
+            logging.info("Mis notificaciones: table found but no data rows detected.")
         return
 
     logging.info("Mis notificaciones: found %d row(s).", len(rows_data))
