@@ -154,6 +154,20 @@ def _try_fill_text(page, selectors: list[str], value: str) -> bool:
     return False
 
 
+def _check_sat_500(page) -> None:
+    """
+    Detect SAT HTTP 500 error pages after login and raise a clear exception.
+    """
+    try:
+        body = (page.locator("body").inner_text(timeout=1000) or "").lower()
+    except Exception:
+        body = ""
+    if "error: http 500 internal server error".lower() in body or "error: http 500" in body:
+        msg = "SAT login returned HTTP 500 Internal Server Error (server-side). Try again later or check SAT status."
+        logging.error(msg)
+        raise RuntimeError(msg)
+
+
 def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTAL_URL) -> None:
     """
     Minimal login flow for SAT Buzón using e.firma, using selectors from mapping.
@@ -210,6 +224,8 @@ def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTA
         raise RuntimeError("Could not find Enviar button on SAT Buzón page")
     logging.info("Phase 1: [%.2fs] Enviar pressed", _elapsed())
     _run_context["logged_in"] = True
+    page.wait_for_timeout(1000)
+    _check_sat_500(page)
 
 
 def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str) -> bool:
