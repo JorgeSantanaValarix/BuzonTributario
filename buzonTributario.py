@@ -23,6 +23,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 DEFAULT_PORTAL_URL = "https://wwwmat.sat.gob.mx/personas/iniciar-sesion"
 
+_run_context: dict | None = None
+
 
 def load_buzon_config(config_path: str | None) -> dict:
     """
@@ -161,6 +163,12 @@ def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTA
     def _elapsed() -> float:
         return round(time.perf_counter() - t0, 2)
 
+    global _run_context
+    _run_context = {
+        "page": page,
+        "mapping": mapping,
+        "logged_in": False,
+    }
     logging.info("")
     logging.info("===== Section: Login (e.firma, Buzón) =====")
 
@@ -201,6 +209,7 @@ def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTA
     if not _try_click(page, enviar_selectors):
         raise RuntimeError("Could not find Enviar button on SAT Buzón page")
     logging.info("Phase 1: [%.2fs] Enviar pressed", _elapsed())
+    _run_context["logged_in"] = True
 
 
 def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str) -> bool:
@@ -236,14 +245,27 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
             page = context.new_page()
             try:
                 login_buzon(page, efirma, mapping, base_url=portal_url)
-                # Basic post-login sanity check: ensure URL changed away from initial portal URL.
+                # Basic post-login sanity check: log current URL, then leave browser
+                # open for 10 seconds for manual inspection before closing.
                 page.wait_for_timeout(1000)
                 current_url = page.url or ""
                 logging.info("Post-login URL: %s", current_url)
+                logging.info("Keeping browser open 10 seconds for inspection...")
+                page.wait_for_timeout(10000)
+                logging.info("Inspection period complete; closing browser.")
                 success = True
+            except KeyboardInterrupt:
+                logging.info("KeyboardInterrupt detected, running cleanup.")
+                _cleanup_on_interrupt(page, context, browser)
+                raise
             finally:
-                context.close()
-                browser.close()
+                # If cleanup already closed these, calls will be no-ops.
+                for obj_name, obj in (("page", page), ("context", context), ("browser", browser)):
+                    try:
+                        if obj is not None:
+                            obj.close()
+                    except Exception as e:
+                        logging.debug("%s close error in finalizer: %s", obj_name, e)
         return success
     except Exception as exc:
         logging.exception("Error during BuzonTributario login: %s", exc)
@@ -267,6 +289,25 @@ def _setup_logging(log_file: str) -> None:
             logging.StreamHandler(sys.stdout),
         ],
     )
+
+
+def _cleanup_on_interrupt(page, context, browser) -> None:
+    """
+    Best-effort cleanup when the user presses Ctrl+C or on other interruptions.
+    If we are logged in, this is where a future logout flow could be added.
+    """
+    global _run_context
+    logged_in = _run_context.get("logged_in", False) if _run_context else False
+    if logged_in:
+        logging.info("Cleanup: user was logged in. (Logout flow not yet implemented for Buzón.)")
+    _run_context = None
+
+    for name, obj in (("page", page), ("context", context), ("browser", browser)):
+        try:
+            if obj is not None:
+                obj.close()
+        except Exception as e:
+            logging.debug("%s close error: %s", name, e)
 
 
 def main() -> None:
