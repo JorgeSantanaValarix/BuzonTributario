@@ -281,6 +281,8 @@ def open_mis_expedientes_menu(page) -> None:
     """
     Open the 'Mis expedientes' dropdown in the Buzón top navigation.
     """
+    logging.info("")
+    logging.info("===== Section: Mis expedientes =====")
     logging.info("Phase 2: opening 'Mis expedientes' menu...")
     selectors = [
         "button:has-text('Mis expedientes')",
@@ -298,6 +300,8 @@ def go_to_mis_documentos(page) -> None:
     From the opened 'Mis expedientes' menu, click 'Mis documentos' and then
     navigate Cobranza -> Líneas de captura and read the table.
     """
+    logging.info("")
+    logging.info("===== Section: Mis Documentos =====")
     logging.info("Phase 2: navigating to 'Mis documentos'...")
     selectors = [
         "a:has-text('Mis documentos')",
@@ -318,6 +322,8 @@ def go_to_mis_notificaciones(page) -> None:
     """
     From the opened 'Mis expedientes' menu, click 'Mis notificaciones'.
     """
+    logging.info("")
+    logging.info("===== Section: Mis Notificaciones =====")
     logging.info("Phase 2: navigating to 'Mis notificaciones'...")
     selectors = [
         "a:has-text('Mis notificaciones')",
@@ -359,6 +365,8 @@ def go_to_mis_comunicados(page) -> None:
     """
     From the opened 'Mis expedientes' menu, click 'Mis comunicados'.
     """
+    logging.info("")
+    logging.info("===== Section: Mis comunicados =====")
     logging.info("Phase 2: navigating to 'Mis comunicados'...")
     selectors = [
         "a:has-text('Mis comunicados')",
@@ -772,6 +780,8 @@ def _cleanup_on_interrupt(page, context, browser) -> None:
     global _run_context
     logged_in = _run_context.get("logged_in", False) if _run_context else False
     if logged_in:
+        logging.info("")
+        logging.info("===== Section: Logout =====")
         logging.info("Cleanup: user is logged in, handling possible survey popup then logging out...")
         try:
             # First, handle optional satisfaction survey popup: "¿Desea contestar la encuesta de satisfacción?"
