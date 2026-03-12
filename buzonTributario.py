@@ -370,6 +370,32 @@ def go_to_mis_comunicados(page) -> None:
     page.wait_for_timeout(1000)
 
 
+def wait_for_comunicados_loaded(page) -> None:
+    """
+    Wait until the Mis comunicados page has finished loading by detecting
+    the section header 'Mensajes no leídos' (same pattern as post-login wait).
+    """
+    logging.info("Phase 2: waiting for Mis comunicados page to load...")
+    timeout_ms = 8000
+    poll_ms = 150
+    t_end = time.perf_counter() + (timeout_ms / 1000.0)
+    expected_pat = "mensajes no leídos"
+    while time.perf_counter() < t_end:
+        page.wait_for_timeout(poll_ms)
+        try:
+            for frame in _iter_frames(page):
+                try:
+                    body = (frame.locator("body").inner_text(timeout=500) or "").lower()
+                except Exception:
+                    continue
+                if expected_pat in body:
+                    logging.info("Phase 2: Mis comunicados page loaded (pattern 'Mensajes no leídos' detected).")
+                    return
+        except Exception:
+            continue
+    logging.warning("Phase 2: Mis comunicados load timeout; continuing anyway.")
+
+
 def go_to_cobranza(page) -> None:
     """
     Inside 'Mis documentos', click the 'Cobranza' button/tab.
@@ -464,10 +490,13 @@ def read_notificaciones_table(page) -> None:
     When there is no data:
       - Filters for Autoridad emisora / Acto administrativo only have 'Seleccione'
       - Table body shows 'No se encontraron resultados'
+    Logs each step and its output so the user can see the full check sequence.
     """
     logging.info("Phase 3: reading 'Mis notificaciones' table...")
 
-    # Check filters first (best-effort, logs only).
+    # Step 1: Check filter options (Autoridad emisora, Acto administrativo).
+    logging.info("Mis notificaciones Step 1: Checking filter options (Autoridad emisora, Acto administrativo)...")
+    filters_logged = 0
     for frame in _iter_frames(page):
         try:
             selects = frame.locator("select").all()
@@ -488,21 +517,30 @@ def read_notificaciones_table(page) -> None:
             if not options:
                 continue
             if label_text and any(k in label_text for k in ["Autoridad emisora", "Acto administrativo"]):
-                logging.info("Filtro '%s' opciones: %s", label_text, options)
-        # Only inspect first frame for filters; avoid duplicate logs.
+                logging.info("Mis notificaciones Step 1 output: Filtro '%s' opciones: %s", label_text, options)
+                filters_logged += 1
         break
+    if filters_logged == 0:
+        logging.info("Mis notificaciones Step 1 output: No filter dropdowns found for Autoridad emisora / Acto administrativo.")
 
-    # Check for 'No se encontraron resultados'.
+    # Step 2: Check for 'No se encontraron resultados' in table body.
+    logging.info("Mis notificaciones Step 2: Checking for 'No se encontraron resultados' in table body...")
+    found_no_results_text = False
     for frame in _iter_frames(page):
         try:
             no_results = frame.locator("text=/No se encontraron resultados/i")
             if no_results.count() > 0:
-                logging.info("Mis notificaciones: No se encontraron resultados")
-                return
+                found_no_results_text = True
+                break
         except Exception:
             continue
+    if found_no_results_text:
+        logging.info("Mis notificaciones Step 2 output: Found 'No se encontraron resultados' — no notification rows for current filters.")
+        return
+    logging.info("Mis notificaciones Step 2 output: Text 'No se encontraron resultados' not found; attempting to read table rows.")
 
-    # Otherwise, read the table rows similarly to Líneas de captura.
+    # Step 3: Read table rows (headers: Folio del acto administrativo, Autoridad emisora, etc.).
+    logging.info("Mis notificaciones Step 3: Reading table rows...")
     rows_data: list[dict] = []
     for frame in _iter_frames(page):
         try:
@@ -514,6 +552,7 @@ def read_notificaciones_table(page) -> None:
             if row_count <= 1:
                 continue
             headers = [h.inner_text().strip() for h in trs.nth(0).locator("th, td").all()]
+            logging.info("Mis notificaciones Step 3 output: Table headers: %s", headers)
             for i in range(1, row_count):
                 tds = trs.nth(i).locator("td").all()
                 if not tds:
@@ -529,24 +568,19 @@ def read_notificaciones_table(page) -> None:
             continue
 
     if not rows_data:
-        # No data rows; explicitly check again for the "No se encontraron resultados" message
-        # so logs match what the user sees on screen.
-        found_no_results_text = False
+        logging.info("Mis notificaciones Step 3 output: Table found but no data rows; re-checking for 'No se encontraron resultados'...")
         for frame in _iter_frames(page):
             try:
                 no_results = frame.locator("text=/No se encontraron resultados/i")
                 if no_results.count() > 0:
-                    logging.info("Mis notificaciones: No se encontraron resultados")
-                    found_no_results_text = True
-                    break
+                    logging.info("Mis notificaciones Step 3 output: Confirmed 'No se encontraron resultados' — no notification rows.")
+                    return
             except Exception:
                 continue
-
-        if not found_no_results_text:
-            logging.info("Mis notificaciones: table found but no data rows detected.")
+        logging.info("Mis notificaciones Step 3 output: No data rows and 'No se encontraron resultados' not detected.")
         return
 
-    logging.info("Mis notificaciones: found %d row(s).", len(rows_data))
+    logging.info("Mis notificaciones Step 3 output: Found %d row(s).", len(rows_data))
     for i, row in enumerate(rows_data, start=1):
         logging.info("Mis notificaciones row %d: %s", i, row)
 
@@ -670,6 +704,7 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                             read_notificaciones_table(page)
                         if mode in ("test-comunicados", "test-full"):
                             go_to_mis_comunicados(page)
+                            wait_for_comunicados_loaded(page)
                             read_comunicados_table(page)
 
                     # Basic post-login sanity check: log current URL, then leave browser
