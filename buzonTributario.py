@@ -329,6 +329,32 @@ def go_to_mis_notificaciones(page) -> None:
     page.wait_for_timeout(1000)
 
 
+def wait_for_notificaciones_loaded(page) -> None:
+    """
+    Wait until the Mis notificaciones page has finished loading by detecting
+    the text 'Total de notificaciones pendientes:' (same pattern as post-login wait).
+    """
+    logging.info("Phase 2: waiting for Mis notificaciones page to load...")
+    timeout_ms = 8000
+    poll_ms = 150
+    t_end = time.perf_counter() + (timeout_ms / 1000.0)
+    expected_pat = "total de notificaciones pendientes:"
+    while time.perf_counter() < t_end:
+        page.wait_for_timeout(poll_ms)
+        try:
+            for frame in _iter_frames(page):
+                try:
+                    body = (frame.locator("body").inner_text(timeout=500) or "").lower()
+                except Exception:
+                    continue
+                if expected_pat in body:
+                    logging.info("Phase 2: Mis notificaciones page loaded (pattern detected).")
+                    return
+        except Exception:
+            continue
+    logging.warning("Phase 2: Mis notificaciones load timeout; continuing anyway.")
+
+
 def go_to_mis_comunicados(page) -> None:
     """
     From the opened 'Mis expedientes' menu, click 'Mis comunicados'.
@@ -640,6 +666,7 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                             go_to_mis_documentos(page)
                         if mode in ("test-notificaciones", "test-full"):
                             go_to_mis_notificaciones(page)
+                            wait_for_notificaciones_loaded(page)
                             read_notificaciones_table(page)
                         if mode in ("test-comunicados", "test-full"):
                             go_to_mis_comunicados(page)
