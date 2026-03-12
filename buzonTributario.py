@@ -238,6 +238,94 @@ def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTA
     page.wait_for_timeout(1000)
     _check_sat_500(page)
 
+    # Wait for post-login Buzón page to fully load before any navigation.
+    # Similar to sat_declaration_filler: poll URL/body until expected pattern or timeout.
+    logging.info("Phase 1: [%.2fs] waiting for Buzón post-login page...", _elapsed())
+    post_login_timeout_ms = 8000
+    poll_ms = 150
+    t_end = time.perf_counter() + (post_login_timeout_ms / 1000.0)
+    expected_pat = "buzón tributario de"
+    while time.perf_counter() < t_end:
+        page.wait_for_timeout(poll_ms)
+        try:
+            url = (page.url or "").lower()
+            if "/buzon" in url:
+                logging.info("Phase 1: [%.2fs] Buzón URL detected: %s", _elapsed(), url)
+                break
+            # Fallback: check body text for the header "Buzón Tributario de"
+            for frame in _iter_frames(page):
+                try:
+                    body = (frame.locator("body").inner_text(timeout=500) or "").lower()
+                except Exception:
+                    continue
+                if expected_pat in body:
+                    logging.info("Phase 1: [%.2fs] Buzón header detected in body text", _elapsed())
+                    t_end = time.perf_counter()  # Force exit
+                    break
+        except Exception:
+            continue
+
+
+def open_mis_expedientes_menu(page) -> None:
+    """
+    Open the 'Mis expedientes' dropdown in the Buzón top navigation.
+    """
+    logging.info("Phase 2: opening 'Mis expedientes' menu...")
+    selectors = [
+        "button:has-text('Mis expedientes')",
+        "a:has-text('Mis expedientes')",
+        "[role='button']:has-text('Mis expedientes')",
+        "text=/\\bMis expedientes\\b/i",
+    ]
+    if not _try_click(page, selectors):
+        raise RuntimeError("Could not find 'Mis expedientes' menu in Buzón")
+    page.wait_for_timeout(500)
+
+
+def go_to_mis_documentos(page) -> None:
+    """
+    From the opened 'Mis expedientes' menu, click 'Mis documentos'.
+    """
+    logging.info("Phase 2: navigating to 'Mis documentos'...")
+    selectors = [
+        "a:has-text('Mis documentos')",
+        "button:has-text('Mis documentos')",
+        "text=/\\bMis documentos\\b/i",
+    ]
+    if not _try_click(page, selectors):
+        raise RuntimeError("Could not find 'Mis documentos' option in Buzón")
+    page.wait_for_timeout(1000)
+
+
+def go_to_mis_notificaciones(page) -> None:
+    """
+    From the opened 'Mis expedientes' menu, click 'Mis notificaciones'.
+    """
+    logging.info("Phase 2: navigating to 'Mis notificaciones'...")
+    selectors = [
+        "a:has-text('Mis notificaciones')",
+        "button:has-text('Mis notificaciones')",
+        "text=/\\bMis notificaciones\\b/i",
+    ]
+    if not _try_click(page, selectors):
+        raise RuntimeError("Could not find 'Mis notificaciones' option in Buzón")
+    page.wait_for_timeout(1000)
+
+
+def go_to_mis_comunicados(page) -> None:
+    """
+    From the opened 'Mis expedientes' menu, click 'Mis comunicados'.
+    """
+    logging.info("Phase 2: navigating to 'Mis comunicados'...")
+    selectors = [
+        "a:has-text('Mis comunicados')",
+        "button:has-text('Mis comunicados')",
+        "text=/\\bMis comunicados\\b/i",
+    ]
+    if not _try_click(page, selectors):
+        raise RuntimeError("Could not find 'Mis comunicados' option in Buzón")
+    page.wait_for_timeout(1000)
+
 
 def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str) -> bool:
     """
@@ -273,6 +361,9 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                 page = context.new_page()
                 try:
                     login_buzon(page, efirma, mapping, base_url=portal_url)
+                    # Default post-login navigation: open Mis expedientes -> Mis documentos.
+                    open_mis_expedientes_menu(page)
+                    go_to_mis_documentos(page)
                     # Basic post-login sanity check: log current URL, then leave browser
                     # open for 10 seconds for manual inspection before closing.
                     page.wait_for_timeout(1000)
