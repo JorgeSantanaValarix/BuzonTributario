@@ -700,23 +700,23 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                     login_buzon(page, efirma, mapping, base_url=portal_url)
                     # Navigation per mode:
                     # - test-login: login only (no navigation)
-                    # - test-documentos: Mis expedientes -> Mis documentos (which does
-                    #   Cobranza -> Líneas de captura -> read table)
+                    # - test-documentos: Mis expedientes -> Mis documentos (Cobranza -> Líneas de captura -> read table)
                     # - test-notificaciones: Mis expedientes -> Mis notificaciones -> read table
                     # - test-comunicados: Mis expedientes -> Mis comunicados -> read table
-                    # - test-full: run all three in sequence, reusing same session
-                    if mode in ("test-documentos", "test-notificaciones", "test-comunicados", "test-full"):
+                    # - test-full: run all three in sequence; open Mis expedientes dropdown before EACH section
+                    if mode in ("test-documentos", "test-full"):
                         open_mis_expedientes_menu(page)
-                        if mode in ("test-documentos", "test-full"):
-                            go_to_mis_documentos(page)
-                        if mode in ("test-notificaciones", "test-full"):
-                            go_to_mis_notificaciones(page)
-                            wait_for_notificaciones_loaded(page)
-                            read_notificaciones_table(page)
-                        if mode in ("test-comunicados", "test-full"):
-                            go_to_mis_comunicados(page)
-                            wait_for_comunicados_loaded(page)
-                            read_comunicados_table(page)
+                        go_to_mis_documentos(page)
+                    if mode in ("test-notificaciones", "test-full"):
+                        open_mis_expedientes_menu(page)
+                        go_to_mis_notificaciones(page)
+                        wait_for_notificaciones_loaded(page)
+                        read_notificaciones_table(page)
+                    if mode in ("test-comunicados", "test-full"):
+                        open_mis_expedientes_menu(page)
+                        go_to_mis_comunicados(page)
+                        wait_for_comunicados_loaded(page)
+                        read_comunicados_table(page)
 
                     # Basic post-login sanity check: log current URL, then leave browser
                     # open for 10 seconds for manual inspection before closing.
