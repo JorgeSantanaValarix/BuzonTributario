@@ -280,20 +280,15 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                     logging.info("Post-login URL: %s", current_url)
                     logging.info("Keeping browser open 10 seconds for inspection...")
                     page.wait_for_timeout(10000)
-                    logging.info("Inspection period complete; closing browser.")
+                    logging.info("Inspection period complete; closing browser (with logout if logged in).")
                     success = True
                 except KeyboardInterrupt:
                     logging.info("KeyboardInterrupt detected, running cleanup.")
                     _cleanup_on_interrupt(page, context, browser)
                     raise
                 finally:
-                    # If cleanup already closed these, calls will be no-ops.
-                    for obj_name, obj in (("page", page), ("context", context), ("browser", browser)):
-                        try:
-                            if obj is not None:
-                                obj.close()
-                        except Exception as e:
-                            logging.debug("%s close error in finalizer: %s", obj_name, e)
+                    # Normal or error exit: attempt logout (if logged in) and close browser.
+                    _cleanup_on_interrupt(page, context, browser)
             return success
         except Exception as exc:
             logging.exception("Error during BuzonTributario login: %s", exc)
@@ -326,13 +321,27 @@ def _setup_logging(log_file: str) -> None:
 
 def _cleanup_on_interrupt(page, context, browser) -> None:
     """
-    Best-effort cleanup when the user presses Ctrl+C or on other interruptions.
-    If we are logged in, this is where a future logout flow could be added.
+    Best-effort cleanup when the program ends (normal exit or Ctrl+C).
+    If we are logged in, try to click 'Cerrar sesión' before closing browser.
     """
     global _run_context
     logged_in = _run_context.get("logged_in", False) if _run_context else False
     if logged_in:
-        logging.info("Cleanup: user was logged in. (Logout flow not yet implemented for Buzón.)")
+        logging.info("Cleanup: user is logged in, attempting to click 'Cerrar sesión'...")
+        try:
+            # Try both button and link variants for Cerrar sesión across all frames.
+            logout_selectors = [
+                "button:has-text('Cerrar sesión')",
+                "a:has-text('Cerrar sesión')",
+                "[role='button']:has-text('Cerrar sesión')",
+            ]
+            _try_click(page, logout_selectors)
+            # Give SAT a moment to process logout and redirect.
+            page.wait_for_timeout(1500)
+            logging.info("Cleanup: logout attempt completed.")
+        except Exception as e:
+            logging.warning("Cleanup: error while trying to logout: %s", e)
+
     _run_context = None
 
     for name, obj in (("page", page), ("context", context), ("browser", browser)):
