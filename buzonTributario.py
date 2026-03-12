@@ -158,11 +158,19 @@ def _check_sat_500(page) -> None:
     """
     Detect SAT HTTP 500 error pages after login and raise a clear exception.
     """
-    try:
-        body = (page.locator("body").inner_text(timeout=1000) or "").lower()
-    except Exception:
-        body = ""
-    if "error: http 500 internal server error".lower() in body or "error: http 500" in body:
+    patterns = [
+        "error: http 500 internal server error",
+        "error: http 500",
+        "http 500 internal server error",
+    ]
+    text = ""
+    for frame in _iter_frames(page):
+        try:
+            body = (frame.locator("body").inner_text(timeout=1000) or "").lower()
+            text += "\n" + body
+        except Exception:
+            continue
+    if any(pat in text for pat in patterns):
         msg = "SAT login returned HTTP 500 Internal Server Error (server-side). Try again later or check SAT status."
         logging.error(msg)
         raise RuntimeError(msg)
@@ -220,6 +228,8 @@ def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTA
         raise RuntimeError("Could not fill password input on SAT Buzón page")
     logging.info("Phase 1: [%.2fs] filled password", _elapsed())
 
+    # Small delay before pressing Enviar to let SAT finish any background validation.
+    page.wait_for_timeout(500)
     if not _try_click(page, enviar_selectors):
         raise RuntimeError("Could not find Enviar button on SAT Buzón page")
     logging.info("Phase 1: [%.2fs] Enviar pressed", _elapsed())
