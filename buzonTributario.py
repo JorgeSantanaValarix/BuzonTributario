@@ -726,8 +726,9 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                         wait_for_comunicados_loaded(page)
                         read_comunicados_table(page)
 
-                    # Basic post-login sanity check: log current URL, then leave browser
-                    # open for 10 seconds for manual inspection before closing.
+                    # Post-run: log final URL and leave browser open briefly for manual inspection.
+                    logging.info("")
+                    logging.info("===== Section: Inspection =====")
                     page.wait_for_timeout(1000)
                     current_url = page.url or ""
                     logging.info("Post-login URL: %s", current_url)
