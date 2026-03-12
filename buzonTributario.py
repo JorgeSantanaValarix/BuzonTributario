@@ -587,11 +587,22 @@ def read_notificaciones_table(page) -> None:
 
 def read_comunicados_table(page) -> None:
     """
-    Read 'Mis comunicados' table in a generic way:
-      - If 'No se encontraron resultados' is present, log it.
-      - Else log each row's columns.
+    Read 'Mis comunicados' / Mensajes no leídos section:
+      - If 'No existe información' is present in Mensajes no leídos, log it and return.
+      - Else for each unread message, log the label and click 'aqui' to download PDF.
     """
     logging.info("Phase 3: reading 'Mis comunicados' table...")
+
+    # Check for 'No existe información' in section Mensajes no leídos (no unread messages).
+    for frame in _iter_frames(page):
+        try:
+            no_info = frame.locator("text=/No existe informaci[oó]n/i")
+            if no_info.count() > 0:
+                logging.info("Mis comunicados (Mensajes no leídos): No existe información")
+                return
+        except Exception:
+            continue
+
     # Focus only on 'Mensajes no leídos' section: for each message, log the label text
     # and click '+' then the 'aqui' link to download its PDF.
 
