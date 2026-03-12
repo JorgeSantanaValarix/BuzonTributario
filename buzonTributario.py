@@ -284,7 +284,8 @@ def open_mis_expedientes_menu(page) -> None:
 
 def go_to_mis_documentos(page) -> None:
     """
-    From the opened 'Mis expedientes' menu, click 'Mis documentos'.
+    From the opened 'Mis expedientes' menu, click 'Mis documentos' and then
+    navigate Cobranza -> Líneas de captura and read the table.
     """
     logging.info("Phase 2: navigating to 'Mis documentos'...")
     selectors = [
@@ -295,6 +296,11 @@ def go_to_mis_documentos(page) -> None:
     if not _try_click(page, selectors):
         raise RuntimeError("Could not find 'Mis documentos' option in Buzón")
     page.wait_for_timeout(1000)
+
+    # Mis Documentos -> Cobranza -> Líneas de captura -> read table.
+    go_to_cobranza(page)
+    go_to_lineas_de_captura(page)
+    read_lineas_de_captura_table(page)
 
 
 def go_to_mis_notificaciones(page) -> None:
@@ -325,6 +331,91 @@ def go_to_mis_comunicados(page) -> None:
     if not _try_click(page, selectors):
         raise RuntimeError("Could not find 'Mis comunicados' option in Buzón")
     page.wait_for_timeout(1000)
+
+
+def go_to_cobranza(page) -> None:
+    """
+    Inside 'Mis documentos', click the 'Cobranza' button/tab.
+    """
+    logging.info("Phase 3: navigating to 'Cobranza'...")
+    selectors = [
+        "button:has-text('Cobranza')",
+        "a:has-text('Cobranza')",
+        "text=/\\bCobranza\\b/i",
+    ]
+    if not _try_click(page, selectors):
+        raise RuntimeError("Could not find 'Cobranza' option in Mis documentos")
+    page.wait_for_timeout(1000)
+
+
+def go_to_lineas_de_captura(page) -> None:
+    """
+    From Cobranza, click the 'Líneas de captura' option.
+    """
+    logging.info("Phase 3: navigating to 'Líneas de captura'...")
+    selectors = [
+        "a:has-text('Líneas de captura')",
+        "button:has-text('Líneas de captura')",
+        "text=/L[ií]neas de captura/i",
+    ]
+    if not _try_click(page, selectors):
+        raise RuntimeError("Could not find 'Líneas de captura' option in Cobranza")
+    page.wait_for_timeout(1000)
+
+
+def read_lineas_de_captura_table(page) -> None:
+    """
+    Read the 'Líneas de captura' table.
+
+    Expected columns: Fecha, Identificador, Descripción, Formato de pago.
+    If there is no data, the page shows 'No existe información' which we log explicitly.
+    """
+    logging.info("Phase 3: reading 'Líneas de captura' table...")
+
+    # Check for 'No existe información' in any frame.
+    for frame in _iter_frames(page):
+        try:
+            no_info_loc = frame.locator("text=/No existe informaci[oó]n/i")
+            if no_info_loc.count() > 0:
+                logging.info("Líneas de captura: No existe información")
+                return
+        except Exception:
+            continue
+
+    # Try to find the first visible table in any frame and read its rows.
+    rows_data: list[dict] = []
+    for frame in _iter_frames(page):
+        try:
+            table = frame.locator("table").first
+            if table.count() == 0:
+                continue
+            trs = table.locator("tr")
+            row_count = trs.count()
+            if row_count <= 1:
+                continue
+            # Assume first row is header.
+            headers = [h.inner_text().strip() for h in trs.nth(0).locator("th, td").all()]
+            for i in range(1, row_count):
+                tds = trs.nth(i).locator("td").all()
+                if not tds:
+                    continue
+                values = [td.inner_text().strip() for td in tds]
+                row = {}
+                for idx, val in enumerate(values):
+                    key = headers[idx] if idx < len(headers) and headers[idx] else f"col_{idx}"
+                    row[key] = val
+                rows_data.append(row)
+            break
+        except Exception:
+            continue
+
+    if not rows_data:
+        logging.info("Líneas de captura: table found but no data rows detected.")
+        return
+
+    logging.info("Líneas de captura: found %d row(s).", len(rows_data))
+    for i, row in enumerate(rows_data, start=1):
+        logging.info("Líneas de captura row %d: %s", i, row)
 
 
 def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str) -> bool:
@@ -361,9 +452,12 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                 page = context.new_page()
                 try:
                     login_buzon(page, efirma, mapping, base_url=portal_url)
-                    # Default post-login navigation: open Mis expedientes -> Mis documentos.
-                    open_mis_expedientes_menu(page)
-                    go_to_mis_documentos(page)
+                    # If mode is test-full, perform Mis expedientes -> Mis documentos
+                    # (which internally does Cobranza -> Líneas de captura -> read table).
+                    if mode == "test-full":
+                        open_mis_expedientes_menu(page)
+                        go_to_mis_documentos(page)
+
                     # Basic post-login sanity check: log current URL, then leave browser
                     # open for 10 seconds for manual inspection before closing.
                     page.wait_for_timeout(1000)
