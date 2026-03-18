@@ -783,33 +783,46 @@ def _cleanup_on_interrupt(page, context, browser) -> None:
     if logged_in:
         logging.info("")
         logging.info("===== Section: Logout =====")
-        logging.info("Cleanup: user is logged in, handling possible survey popup then logging out...")
+        logging.info("Cleanup: user is logged in, clicking 'Cerrar sesión'...")
         try:
-            # First, handle optional satisfaction survey popup: "¿Desea contestar la encuesta de satisfacción?"
-            survey_no_selectors = [
-                "button:has-text('No')",
-                "text=/\\bNo\\b/i",
-            ]
-            for frame in _iter_frames(page):
-                try:
-                    dialog = frame.locator("text=/encuesta de satisfacci[oó]n/i")
-                    if dialog.count() > 0:
-                        logging.info("Cleanup: satisfaction survey popup detected, clicking 'No'.")
-                        _try_click(page, survey_no_selectors)
-                        page.wait_for_timeout(500)
-                        break
-                except Exception:
-                    continue
-
-            # Then click 'Cerrar sesión' across frames.
+            # Step 1: Click 'Cerrar sesión' across frames.
             logout_selectors = [
                 "button:has-text('Cerrar sesión')",
                 "a:has-text('Cerrar sesión')",
                 "[role='button']:has-text('Cerrar sesión')",
                 "text=/Cerrar sesi[oó]n/i",
             ]
-            _try_click(page, logout_selectors)
-            # Give SAT a moment to process logout and redirect.
+            clicked_logout = _try_click(page, logout_selectors)
+            if clicked_logout:
+                logging.info("Cleanup: 'Cerrar sesión' clicked, checking for survey popup...")
+            else:
+                logging.warning("Cleanup: could not find 'Cerrar sesión' button.")
+
+            # Step 2: Wait briefly for survey popup to appear.
+            page.wait_for_timeout(800)
+
+            # Step 3: Handle optional satisfaction survey popup.
+            # Popup text: "¿Desea contestar la encuesta de satisfacción?" with "Si" and "No" buttons.
+            survey_handled = False
+            for frame in _iter_frames(page):
+                try:
+                    dialog = frame.locator("text=/encuesta de satisfacci[oó]n/i")
+                    if dialog.count() > 0:
+                        logging.info("Cleanup: satisfaction survey popup detected, clicking 'No'.")
+                        no_selectors = [
+                            "button:has-text('No')",
+                            "[role='button']:has-text('No')",
+                        ]
+                        _try_click(page, no_selectors)
+                        survey_handled = True
+                        break
+                except Exception:
+                    continue
+
+            if survey_handled:
+                logging.info("Cleanup: survey popup dismissed.")
+
+            # Step 4: Wait for logout to complete.
             page.wait_for_timeout(1500)
             logging.info("Cleanup: logout attempt completed.")
         except Exception as e:
