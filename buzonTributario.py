@@ -74,6 +74,10 @@ def load_buzon_config(config_path: str | None) -> dict:
             download_dir_path = SCRIPT_DIR / download_dir_path
     download_dir_path.mkdir(parents=True, exist_ok=True)
 
+    # 500 error retry settings (for Mis notificaciones, Mis comunicados, Mis documentos)
+    section_500_retry_max = raw.get("section_500_retry_max", 2)
+    section_500_retry_wait_seconds = raw.get("section_500_retry_wait_seconds", 10)
+
     return {
         "portal_url": portal_url,
         "cer_path": cer_path,
@@ -81,6 +85,8 @@ def load_buzon_config(config_path: str | None) -> dict:
         "password": password,
         "sat_ui": sat_ui,
         "download_dir": str(download_dir_path),
+        "section_500_retry_max": section_500_retry_max,
+        "section_500_retry_wait_seconds": section_500_retry_wait_seconds,
         "raw": raw,
         "config_path": str(cfg_path),
     }
@@ -186,6 +192,71 @@ def _check_sat_500(page) -> None:
         msg = "SAT login returned HTTP 500 Internal Server Error (server-side). Try again later or check SAT status."
         logging.error(msg)
         raise RuntimeError(msg)
+
+
+def _detect_sat_500(page) -> bool:
+    """
+    Detect SAT HTTP 500 error pages and return True if found, False otherwise.
+    Does NOT raise an exception (used for retry logic).
+    """
+    patterns = [
+        "error: http 500 internal server error",
+        "error: http 500",
+        "http 500 internal server error",
+        "error 500--internal server error",
+        "500 internal server error",
+    ]
+    text = ""
+    for frame in _iter_frames(page):
+        try:
+            body = (frame.locator("body").inner_text(timeout=1000) or "").lower()
+            text += "\n" + body
+        except Exception:
+            continue
+    return any(pat in text for pat in patterns)
+
+
+def _navigate_section_with_retry(
+    page,
+    nav_func,
+    section_name: str,
+    max_retries: int,
+    wait_seconds: int,
+) -> None:
+    """
+    Navigate to a section (Mis notificaciones, Mis comunicados, Mis documentos) with
+    retry logic for HTTP 500 errors.
+
+    1. Opens 'Mis expedientes' menu
+    2. Calls nav_func(page) to navigate to the section
+    3. If 500 error detected: wait, then retry from step 1
+    4. Repeats up to max_retries times before raising RuntimeError
+    """
+    for attempt in range(max_retries + 1):
+        open_mis_expedientes_menu(page)
+        nav_func(page)
+        page.wait_for_timeout(1000)
+
+        if not _detect_sat_500(page):
+            return
+
+        if attempt < max_retries:
+            logging.warning(
+                "Section '%s': HTTP 500 error detected (attempt %d/%d). "
+                "Waiting %d seconds before retry...",
+                section_name,
+                attempt + 1,
+                max_retries + 1,
+                wait_seconds,
+            )
+            page.wait_for_timeout(wait_seconds * 1000)
+        else:
+            msg = (
+                f"Section '{section_name}': HTTP 500 error persisted after "
+                f"{max_retries + 1} attempts. Giving up."
+            )
+            logging.error(msg)
+            raise RuntimeError(msg)
 
 
 def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTAL_URL) -> None:
@@ -692,11 +763,16 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
     logging.info("Using mapping: %s", mapping_file)
     logging.info("Portal URL: %s", portal_url)
 
-    # Keep download directory in run context for use by Mis comunicados PDF downloads.
+    # Keep download directory and retry config in run context.
     global _run_context
     if _run_context is None:
         _run_context = {}
     _run_context["download_dir"] = cfg["download_dir"]
+    _run_context["section_500_retry_max"] = cfg["section_500_retry_max"]
+    _run_context["section_500_retry_wait_seconds"] = cfg["section_500_retry_wait_seconds"]
+
+    retry_max = cfg["section_500_retry_max"]
+    retry_wait = cfg["section_500_retry_wait_seconds"]
 
     for attempt in range(2):
         try:
@@ -711,18 +787,21 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                     # - test-documentos: Mis expedientes -> Mis documentos (Cobranza -> Líneas de captura -> read table)
                     # - test-notificaciones: Mis expedientes -> Mis notificaciones -> read table
                     # - test-comunicados: Mis expedientes -> Mis comunicados -> read table
-                    # - test-full: run all three in sequence; open Mis expedientes dropdown before EACH section
+                    # - test-full: run all three in sequence; uses _navigate_section_with_retry for 500 error handling
                     if mode in ("test-documentos", "test-full"):
-                        open_mis_expedientes_menu(page)
-                        go_to_mis_documentos(page)
+                        _navigate_section_with_retry(
+                            page, go_to_mis_documentos, "Mis documentos", retry_max, retry_wait
+                        )
                     if mode in ("test-notificaciones", "test-full"):
-                        open_mis_expedientes_menu(page)
-                        go_to_mis_notificaciones(page)
+                        _navigate_section_with_retry(
+                            page, go_to_mis_notificaciones, "Mis notificaciones", retry_max, retry_wait
+                        )
                         wait_for_notificaciones_loaded(page)
                         read_notificaciones_table(page)
                     if mode in ("test-comunicados", "test-full"):
-                        open_mis_expedientes_menu(page)
-                        go_to_mis_comunicados(page)
+                        _navigate_section_with_retry(
+                            page, go_to_mis_comunicados, "Mis comunicados", retry_max, retry_wait
+                        )
                         wait_for_comunicados_loaded(page)
                         read_comunicados_table(page)
 
