@@ -12,6 +12,7 @@ Current modes (local only, no API yet):
 import argparse
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import re
 import sys
 import time
@@ -82,6 +83,10 @@ def load_buzon_config(config_path: str | None) -> dict:
     # Login verification max wait (safety limit to prevent infinite loop)
     login_max_wait_seconds = raw.get("login_max_wait_seconds", 120)
 
+    # Log rotation settings
+    log_max_bytes_mb = raw.get("log_max_bytes_mb", 10)
+    log_backup_count = raw.get("log_backup_count", 5)
+
     return {
         "portal_url": portal_url,
         "cer_path": cer_path,
@@ -92,6 +97,8 @@ def load_buzon_config(config_path: str | None) -> dict:
         "section_500_retry_max": section_500_retry_max,
         "section_500_retry_wait_seconds": section_500_retry_wait_seconds,
         "login_max_wait_seconds": login_max_wait_seconds,
+        "log_max_bytes_mb": log_max_bytes_mb,
+        "log_backup_count": log_backup_count,
         "raw": raw,
         "config_path": str(cfg_path),
     }
@@ -1051,7 +1058,9 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
     portal_url = cfg["portal_url"] or DEFAULT_PORTAL_URL
 
     log_file = cfg["raw"].get("log_file") or "buzon_tributario.log"
-    _setup_logging(log_file)
+    log_max_mb = cfg["log_max_bytes_mb"]
+    log_backup = cfg["log_backup_count"]
+    _setup_logging(log_file, max_bytes=log_max_mb * 1024 * 1024, backup_count=log_backup)
 
     logging.info("")
     logging.info("=== BuzonTributario login (%s) ===", mode)
@@ -1136,9 +1145,20 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
     return False
 
 
-def _setup_logging(log_file: str) -> None:
+def _setup_logging(
+    log_file: str,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
+) -> None:
     """
-    Minimal logging setup for BuzonTributario.
+    Logging setup for BuzonTributario with log rotation.
+    
+    Args:
+        log_file: Path to log file (default: buzon_tributario.log)
+        max_bytes: Max size per log file before rotation (default: 10 MB)
+        backup_count: Number of backup files to keep (default: 5)
+    
+    With defaults, max disk usage is ~60 MB (6 files × 10 MB).
     """
     log_path = Path(log_file)
     if not log_path.is_absolute():
@@ -1148,10 +1168,16 @@ def _setup_logging(log_file: str) -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
+            RotatingFileHandler(
+                log_path,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+            ),
             logging.StreamHandler(sys.stdout),
         ],
     )
+    logging.info("Log file: %s (rotation: max %d MB, keep %d backups)", log_path, max_bytes // (1024 * 1024), backup_count)
 
 
 def _cleanup_on_interrupt(page, context, browser) -> None:
