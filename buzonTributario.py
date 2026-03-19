@@ -866,61 +866,119 @@ def _process_comunicados_section(
         safe_label = " ".join(label_text.split()) if label_text else "(sin texto)"
         logging.info("%s mensaje %d: %s", section_label, idx, safe_label)
         
-        # Try to click the element or a nearby [+] button to expand
+        # Try to click the [+] button to expand the message
+        expand_clicked = False
         try:
-            # Look for a clickable expand button near this element
-            expand_btn = elem.locator("xpath=preceding-sibling::*[contains(@class, 'expand') or contains(text(), '+')]")
-            if expand_btn.count() == 0:
-                expand_btn = elem.locator("xpath=ancestor::*[1]/*[contains(text(), '+')]")
-            if expand_btn.count() == 0:
-                # Try clicking the element itself or its parent row
+            # Strategy 1: Look for [+] button as preceding sibling or nearby element
+            expand_selectors = [
+                "xpath=preceding-sibling::*[contains(text(), '+')]",
+                "xpath=preceding-sibling::*[1]",
+                "xpath=ancestor::*[1]/*[contains(text(), '+')]",
+                "xpath=ancestor::*[1]//*[contains(text(), '+')]",
+                "xpath=ancestor::*[2]/*[contains(text(), '+')]",
+                "xpath=ancestor::*[2]//*[contains(text(), '+')]",
+            ]
+            
+            for sel in expand_selectors:
+                try:
+                    expand_btn = elem.locator(sel)
+                    if expand_btn.count() > 0:
+                        btn_text = (expand_btn.first.inner_text(timeout=500) or "").strip()
+                        if "+" in btn_text or btn_text == "":
+                            expand_btn.first.click()
+                            frame.page.wait_for_timeout(800)
+                            expand_clicked = True
+                            logging.debug("%s mensaje %d: clicked expand using selector %s", section_label, idx, sel)
+                            break
+                except Exception:
+                    continue
+            
+            # Strategy 2: If no [+] found, try clicking the element itself or parent row
+            if not expand_clicked:
+                try:
+                    elem.click()
+                    frame.page.wait_for_timeout(800)
+                    expand_clicked = True
+                    logging.debug("%s mensaje %d: clicked element itself to expand", section_label, idx)
+                except Exception:
+                    pass
+            
+            if not expand_clicked:
                 parent_row = elem.locator("xpath=ancestor::tr[1]")
                 if parent_row.count() > 0:
                     try:
                         parent_row.first.click()
-                        frame.page.wait_for_timeout(300)
+                        frame.page.wait_for_timeout(800)
+                        expand_clicked = True
+                        logging.debug("%s mensaje %d: clicked parent row to expand", section_label, idx)
                     except Exception:
                         pass
-            else:
-                try:
-                    expand_btn.first.click()
-                    frame.page.wait_for_timeout(300)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug("%s mensaje %d: expand click error: %s", section_label, idx, e)
         
         # Now look for 'aqui' link to download PDF
         try:
-            # Look for 'aqui' link in the expanded content
             aqui_link = None
             
-            # Search in the parent container for 'aqui' link
-            parent_container = elem.locator("xpath=ancestor::*[3]")
-            if parent_container.count() > 0:
-                aqui_in_container = parent_container.first.locator("a:has-text('aqui')")
-                if aqui_in_container.count() > 0:
-                    aqui_link = aqui_in_container.first
+            # Strategy 1: Look for 'aqui' link in following siblings (expanded content appears after)
+            aqui_selectors = [
+                "xpath=following-sibling::*//a[contains(text(), 'aqui') or contains(text(), 'aquí')]",
+                "xpath=following-sibling::*/a[contains(text(), 'aqui') or contains(text(), 'aquí')]",
+                "xpath=ancestor::*[1]/following-sibling::*//a[contains(text(), 'aqui') or contains(text(), 'aquí')]",
+                "xpath=ancestor::*[2]/following-sibling::*//a[contains(text(), 'aqui') or contains(text(), 'aquí')]",
+                "xpath=ancestor::*[2]//a[contains(text(), 'aqui') or contains(text(), 'aquí')]",
+                "xpath=ancestor::*[3]//a[contains(text(), 'aqui') or contains(text(), 'aquí')]",
+                "xpath=ancestor::*[4]//a[contains(text(), 'aqui') or contains(text(), 'aquí')]",
+            ]
             
+            for sel in aqui_selectors:
+                try:
+                    link = elem.locator(sel)
+                    if link.count() > 0:
+                        # Check if link is visible
+                        if link.first.is_visible(timeout=500):
+                            aqui_link = link.first
+                            logging.debug("%s mensaje %d: found 'aqui' link using selector %s", section_label, idx, sel)
+                            break
+                except Exception:
+                    continue
+            
+            # Strategy 2: Broader search - find any visible 'aqui' link on page
             if aqui_link is None:
-                # Broader search: find any visible 'aqui' link
-                all_aqui = frame.locator("a:has-text('aqui'):visible")
-                if all_aqui.count() > 0:
-                    aqui_link = all_aqui.first
+                try:
+                    all_aqui = frame.locator("a:has-text('aqui'):visible, a:has-text('aquí'):visible")
+                    if all_aqui.count() > 0:
+                        aqui_link = all_aqui.first
+                        logging.debug("%s mensaje %d: found 'aqui' link using broad visible search", section_label, idx)
+                except Exception:
+                    pass
             
             if aqui_link:
-                with frame.page.expect_download(timeout=10000) as dl_info:
-                    aqui_link.click()
-                download = dl_info.value
-                suggested = download.suggested_filename or f"comunicado_{section_label.replace(' ', '_')}_{idx}.pdf"
-                if download_dir:
-                    target_path = Path(download_dir) / suggested
-                else:
-                    target_path = SCRIPT_DIR / suggested
-                download.save_as(str(target_path))
-                logging.info("%s mensaje %d: PDF descargado en %s", section_label, idx, target_path)
+                try:
+                    with frame.page.expect_download(timeout=10000) as dl_info:
+                        aqui_link.click()
+                    download = dl_info.value
+                    suggested = download.suggested_filename or f"comunicado_{section_label.replace(' ', '_')}_{idx}.pdf"
+                    if download_dir:
+                        target_path = Path(download_dir) / suggested
+                    else:
+                        target_path = SCRIPT_DIR / suggested
+                    download.save_as(str(target_path))
+                    logging.info("%s mensaje %d: PDF descargado en %s", section_label, idx, target_path)
+                except Exception as dl_err:
+                    logging.warning("%s mensaje %d: 'aqui' link found but download failed: %s", section_label, idx, dl_err)
             else:
                 logging.info("%s mensaje %d: no 'aqui' link found for download.", section_label, idx)
+            
+            # Collapse the message after processing (click [-] if present) to avoid confusion
+            try:
+                collapse_btn = elem.locator("xpath=preceding-sibling::*[contains(text(), '-')]")
+                if collapse_btn.count() > 0:
+                    collapse_btn.first.click()
+                    frame.page.wait_for_timeout(300)
+            except Exception:
+                pass
+                
         except Exception as e:
             logging.warning("%s mensaje %d: error al descargar PDF: %s", section_label, idx, e)
     
