@@ -520,6 +520,7 @@ def read_lineas_de_captura_table(page) -> None:
             no_info_loc = frame.locator("text=/No existe informaci[oó]n/i")
             if no_info_loc.count() > 0:
                 logging.info("Líneas de captura: No existe información")
+                logging.info(">>> MESSAGES IN MIS DOCUMENTOS (Líneas de captura): 0 messages found (No existe información) <<<")
                 return
         except Exception:
             continue
@@ -553,11 +554,13 @@ def read_lineas_de_captura_table(page) -> None:
 
     if not rows_data:
         logging.info("Líneas de captura: table found but no data rows detected.")
+        logging.info(">>> MESSAGES IN MIS DOCUMENTOS (Líneas de captura): 0 messages found <<<")
         return
 
     logging.info("Líneas de captura: found %d row(s).", len(rows_data))
     for i, row in enumerate(rows_data, start=1):
         logging.info("Líneas de captura row %d: %s", i, row)
+    logging.info(">>> MESSAGES IN MIS DOCUMENTOS (Líneas de captura): %d messages found <<<", len(rows_data))
 
 
 def read_notificaciones_table(page) -> None:
@@ -615,6 +618,7 @@ def read_notificaciones_table(page) -> None:
             continue
     if found_no_results_text:
         logging.info("Mis notificaciones Step 2 output: Found 'No se encontraron resultados' — no notification rows for current filters.")
+        logging.info(">>> MESSAGES IN MIS NOTIFICACIONES: 0 messages found (No se encontraron resultados) <<<")
         return
     logging.info("Mis notificaciones Step 2 output: Text 'No se encontraron resultados' not found; attempting to read table rows.")
 
@@ -653,15 +657,18 @@ def read_notificaciones_table(page) -> None:
                 no_results = frame.locator("text=/No se encontraron resultados/i")
                 if no_results.count() > 0:
                     logging.info("Mis notificaciones Step 3 output: Confirmed 'No se encontraron resultados' — no notification rows.")
+                    logging.info(">>> MESSAGES IN MIS NOTIFICACIONES: 0 messages found (No se encontraron resultados) <<<")
                     return
             except Exception:
                 continue
         logging.info("Mis notificaciones Step 3 output: No data rows and 'No se encontraron resultados' not detected.")
+        logging.info(">>> MESSAGES IN MIS NOTIFICACIONES: 0 messages found <<<")
         return
 
     logging.info("Mis notificaciones Step 3 output: Found %d row(s).", len(rows_data))
     for i, row in enumerate(rows_data, start=1):
         logging.info("Mis notificaciones row %d: %s", i, row)
+    logging.info(">>> MESSAGES IN MIS NOTIFICACIONES: %d messages found <<<", len(rows_data))
 
 
 def read_comunicados_table(page) -> None:
@@ -678,6 +685,7 @@ def read_comunicados_table(page) -> None:
             no_info = frame.locator("text=/No existe informaci[oó]n/i")
             if no_info.count() > 0:
                 logging.info("Mis comunicados (Mensajes no leídos): No existe información")
+                logging.info(">>> MESSAGES IN MIS COMUNICADOS: 0 messages found (No existe información) <<<")
                 return
         except Exception:
             continue
@@ -709,6 +717,7 @@ def read_comunicados_table(page) -> None:
 
     if not links_info:
         logging.info("Mis comunicados: no 'aqui' links found under 'Mensajes no leídos' (no unread messages).")
+        logging.info(">>> MESSAGES IN MIS COMUNICADOS: 0 messages found <<<")
         return
 
     logging.info("Mis comunicados: found %d unread message(s) with 'aqui' link.", len(links_info))
@@ -735,6 +744,8 @@ def read_comunicados_table(page) -> None:
             logging.info("Mis comunicados mensaje %d: PDF descargado en %s", idx, target_path)
         except Exception as e:
             logging.warning("Mis comunicados mensaje %d: error al descargar PDF: %s", idx, e)
+
+    logging.info(">>> MESSAGES IN MIS COMUNICADOS: %d messages found <<<", len(links_info))
 
 
 def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str) -> bool:
