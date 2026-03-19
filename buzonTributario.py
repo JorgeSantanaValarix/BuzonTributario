@@ -227,6 +227,22 @@ def _detect_sat_500(page) -> bool:
             continue
     return any(pat in text for pat in patterns)
 
+def _detect_efirma_invalid(page) -> bool:
+    """
+    Detect the SAT message for invalid/expired E.FIRMA.
+    If present, we should not retry login.
+    """
+    # Exact message seen in SAT UI (case-insensitive); we match substring to be resilient.
+    pat = "no se puede acceder al aplicativo porque su e.firma no esta vigente"
+    text = ""
+    for frame in _iter_frames(page):
+        try:
+            body = (frame.locator("body").inner_text(timeout=1000) or "").lower()
+            text += "\n" + body
+        except Exception:
+            continue
+    return pat in text
+
 
 def _navigate_section_with_retry(
     page,
@@ -292,6 +308,7 @@ def login_buzon(
         "page": page,
         "mapping": mapping,
         "logged_in": False,
+        "efirma_invalid": False,
     }
     logging.info("")
     logging.info("===== Section: Login (e.firma, Buzón) =====")
@@ -339,6 +356,13 @@ def login_buzon(
     page.wait_for_timeout(1000)
     _check_sat_500(page)
 
+    # If E.FIRMA is not valid/expired, SAT shows a specific blocking message.
+    if _detect_efirma_invalid(page):
+        msg = "E_FIRMA_INVALID: No se puede acceder al aplicativo porque su E.FIRMA no está vigente"
+        logging.error(msg)
+        _run_context["efirma_invalid"] = True
+        raise RuntimeError(msg)
+
     # Wait for post-login Buzón page to fully load before any navigation.
     # Poll continuously until "Buzón Tributario de" pattern is detected.
     logging.info("Phase 1: [%.2fs] waiting for login confirmation (Buzón Tributario de)...", _elapsed())
@@ -359,6 +383,13 @@ def login_buzon(
             last_progress_log = time.perf_counter()
 
         try:
+            # Re-check for invalid E.FIRMA while waiting.
+            if _detect_efirma_invalid(page):
+                msg = "E_FIRMA_INVALID: No se puede acceder al aplicativo porque su E.FIRMA no está vigente"
+                logging.error(msg)
+                _run_context["efirma_invalid"] = True
+                raise RuntimeError(msg)
+
             # Check body text for "Buzón Tributario de [Name]"
             for frame in _iter_frames(page):
                 try:
@@ -1382,6 +1413,13 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
         except Exception as exc:
             logging.exception("Error during BuzonTributario login: %s", exc)
             print(f"Error during BuzonTributario login: {exc}", file=sys.stderr)
+            # If E.FIRMA is invalid, terminate immediately (do not retry).
+            if _run_context and _run_context.get("efirma_invalid"):
+                logging.info("E.FIRMA invalid detected; terminating without retry.")
+                return False
+            if "E_FIRMA_INVALID" in str(exc):
+                logging.info("E.FIRMA invalid detected via exception; terminating without retry.")
+                return False
             if attempt == 0:
                 logging.info("Closing and retrying once in %s seconds...", RETRY_WAIT_SECONDS)
                 time.sleep(RETRY_WAIT_SECONDS)
