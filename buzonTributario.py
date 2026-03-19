@@ -292,7 +292,7 @@ def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTA
         raise RuntimeError("Could not find e.firma button on SAT Buzón login page")
 
     logging.info("Phase 1: [%.2fs] e.firma pressed", _elapsed())
-    page.wait_for_timeout(1000)
+    page.wait_for_timeout(1500)
 
     cer_selectors = mapping.get("_login_cer_file_input", [])
     key_selectors = mapping.get("_login_key_file_input", [])
@@ -671,81 +671,268 @@ def read_notificaciones_table(page) -> None:
     logging.info(">>> MESSAGES IN MIS NOTIFICACIONES: %d messages found <<<", len(rows_data))
 
 
+def _find_section_container(page, section_title: str):
+    """
+    Find the container element for a section by its header text.
+    Returns (frame, container_locator) or (None, None) if not found.
+    
+    The section is identified by finding the header text and then getting
+    the parent container or the next sibling that contains the content.
+    """
+    for frame in _iter_frames(page):
+        try:
+            # Look for the section header (e.g., "Mensajes no leídos" or "Mensajes leídos")
+            header = frame.locator(f"text=/^{section_title}$/i")
+            if header.count() > 0:
+                # Try to find the container: look for parent div/section or table
+                # that follows the header
+                container = header.first.locator("xpath=following-sibling::*[1]")
+                if container.count() > 0:
+                    return (frame, container.first)
+                # Fallback: return the parent element
+                parent = header.first.locator("xpath=parent::*")
+                if parent.count() > 0:
+                    return (frame, parent.first)
+        except Exception:
+            continue
+    return (None, None)
+
+
+def _process_comunicados_section(
+    page,
+    section_name: str,
+    section_label: str,
+    download_dir: str | None,
+) -> tuple[int, bool]:
+    """
+    Process a single section of Mis comunicados (either 'Mensajes no leídos' or 'Mensajes leídos').
+    
+    - Finds expandable items in the section
+    - For each item: expands it, logs the label, clicks 'aqui' to download PDF
+    - Returns (count of messages found, whether 'No existe información' was found)
+    """
+    logging.info("Processing section: %s...", section_name)
+    
+    # Check for 'No existe información' in this specific section
+    # We need to look for the section header and check content near it
+    no_info_found = False
+    messages_found = []
+    
+    for frame in _iter_frames(page):
+        try:
+            # Find the section by looking for its header
+            section_header = frame.locator(f"text=/^{section_name}$/i")
+            if section_header.count() == 0:
+                continue
+            
+            # Get the parent container that holds the section content
+            # The structure appears to be: header in a div, followed by content
+            section_parent = section_header.first.locator("xpath=ancestor::div[1]")
+            if section_parent.count() == 0:
+                section_parent = section_header.first.locator("xpath=parent::*")
+            
+            if section_parent.count() == 0:
+                continue
+                
+            parent_element = section_parent.first
+            
+            # Check for 'No existe información' within this section's parent context
+            # Look in the next sibling or within nearby elements
+            try:
+                # Get the outer container that includes both header and content
+                outer_container = section_header.first.locator("xpath=ancestor::*[3]")
+                if outer_container.count() > 0:
+                    section_text = (outer_container.first.inner_text(timeout=2000) or "").lower()
+                    # Check if this section specifically has "no existe información"
+                    # by looking at the text between this header and the next section
+                    header_text = section_name.lower()
+                    header_pos = section_text.find(header_text)
+                    if header_pos >= 0:
+                        # Get text after this header
+                        after_header = section_text[header_pos + len(header_text):]
+                        # Check if "no existe información" appears before "mensajes leídos" (next section)
+                        next_section_pos = after_header.find("mensajes le")
+                        if next_section_pos > 0:
+                            section_content = after_header[:next_section_pos]
+                        else:
+                            section_content = after_header[:500]  # Limit search
+                        
+                        if "no existe informaci" in section_content:
+                            no_info_found = True
+                            logging.info("%s: No existe información", section_label)
+            except Exception:
+                pass
+            
+            # Find expandable items - look for [+] buttons or clickable rows
+            # The items appear to have a pattern with dates like "21/dic/2020"
+            try:
+                # Find all items that look like message rows (contain date pattern)
+                # Look for elements with text matching date pattern
+                all_text_elements = frame.locator("//*[contains(text(), '/') and contains(text(), 'hrs')]")
+                count = all_text_elements.count()
+                
+                for i in range(count):
+                    try:
+                        elem = all_text_elements.nth(i)
+                        elem_text = (elem.inner_text(timeout=1000) or "").strip()
+                        
+                        # Check if this element is within our section
+                        # by checking if the section header comes before it
+                        elem_parent = elem.locator("xpath=ancestor::*[10]")
+                        if elem_parent.count() > 0:
+                            parent_text = (elem_parent.first.inner_text(timeout=1000) or "").lower()
+                            section_name_lower = section_name.lower()
+                            other_section = "mensajes leídos" if "no leídos" in section_name_lower else "mensajes no leídos"
+                            
+                            # Determine if element belongs to this section
+                            section_pos = parent_text.find(section_name_lower)
+                            other_pos = parent_text.find(other_section)
+                            elem_text_lower = elem_text.lower()[:50]
+                            elem_pos = parent_text.find(elem_text_lower[:20])
+                            
+                            if section_pos >= 0 and elem_pos >= 0:
+                                # Check if element is in correct section
+                                if other_pos >= 0:
+                                    if "no leídos" in section_name_lower:
+                                        # For "no leídos", element should be between section_pos and other_pos
+                                        if not (section_pos < elem_pos < other_pos):
+                                            continue
+                                    else:
+                                        # For "leídos", element should be after other_pos
+                                        if elem_pos < other_pos:
+                                            continue
+                        
+                        messages_found.append((frame, elem, elem_text))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            
+            break  # Found our section, stop searching frames
+        except Exception:
+            continue
+    
+    if no_info_found and not messages_found:
+        return (0, True)
+    
+    if not messages_found:
+        logging.info("%s: no messages found.", section_label)
+        return (0, False)
+    
+    logging.info("%s: found %d message(s).", section_label, len(messages_found))
+    
+    # Process each message: expand, log, download PDF
+    for idx, (frame, elem, label_text) in enumerate(messages_found, start=1):
+        safe_label = " ".join(label_text.split()) if label_text else "(sin texto)"
+        logging.info("%s mensaje %d: %s", section_label, idx, safe_label)
+        
+        # Try to click the element or a nearby [+] button to expand
+        try:
+            # Look for a clickable expand button near this element
+            expand_btn = elem.locator("xpath=preceding-sibling::*[contains(@class, 'expand') or contains(text(), '+')]")
+            if expand_btn.count() == 0:
+                expand_btn = elem.locator("xpath=ancestor::*[1]/*[contains(text(), '+')]")
+            if expand_btn.count() == 0:
+                # Try clicking the element itself or its parent row
+                parent_row = elem.locator("xpath=ancestor::tr[1]")
+                if parent_row.count() > 0:
+                    try:
+                        parent_row.first.click()
+                        frame.page.wait_for_timeout(300)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    expand_btn.first.click()
+                    frame.page.wait_for_timeout(300)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        
+        # Now look for 'aqui' link to download PDF
+        try:
+            # Look for 'aqui' link in the expanded content
+            aqui_link = None
+            
+            # Search in the parent container for 'aqui' link
+            parent_container = elem.locator("xpath=ancestor::*[3]")
+            if parent_container.count() > 0:
+                aqui_in_container = parent_container.first.locator("a:has-text('aqui')")
+                if aqui_in_container.count() > 0:
+                    aqui_link = aqui_in_container.first
+            
+            if aqui_link is None:
+                # Broader search: find any visible 'aqui' link
+                all_aqui = frame.locator("a:has-text('aqui'):visible")
+                if all_aqui.count() > 0:
+                    aqui_link = all_aqui.first
+            
+            if aqui_link:
+                with frame.page.expect_download(timeout=10000) as dl_info:
+                    aqui_link.click()
+                download = dl_info.value
+                suggested = download.suggested_filename or f"comunicado_{section_label.replace(' ', '_')}_{idx}.pdf"
+                if download_dir:
+                    target_path = Path(download_dir) / suggested
+                else:
+                    target_path = SCRIPT_DIR / suggested
+                download.save_as(str(target_path))
+                logging.info("%s mensaje %d: PDF descargado en %s", section_label, idx, target_path)
+            else:
+                logging.info("%s mensaje %d: no 'aqui' link found for download.", section_label, idx)
+        except Exception as e:
+            logging.warning("%s mensaje %d: error al descargar PDF: %s", section_label, idx, e)
+    
+    return (len(messages_found), False)
+
+
 def read_comunicados_table(page) -> None:
     """
-    Read 'Mis comunicados' / Mensajes no leídos section:
-      - If 'No existe información' is present in Mensajes no leídos, log it and return.
-      - Else for each unread message, log the label and click 'aqui' to download PDF.
+    Read 'Mis comunicados' page with two sections:
+      - Mensajes no leídos (unread messages)
+      - Mensajes leídos (read messages)
+    
+    For each section:
+      - If 'No existe información' is present, log it
+      - Else for each message, log the label and download PDF via 'aqui' link
+    
+    Logs separate summaries for unread and read messages, plus a combined total.
     """
     logging.info("Phase 3: reading 'Mis comunicados' table...")
 
-    # Check for 'No existe información' in section Mensajes no leídos (no unread messages).
-    for frame in _iter_frames(page):
-        try:
-            no_info = frame.locator("text=/No existe informaci[oó]n/i")
-            if no_info.count() > 0:
-                logging.info("Mis comunicados (Mensajes no leídos): No existe información")
-                logging.info(">>> MESSAGES IN MIS COMUNICADOS: 0 messages found (No existe información) <<<")
-                return
-        except Exception:
-            continue
-
-    # Focus only on 'Mensajes no leídos' section: for each message, log the label text
-    # and click '+' then the 'aqui' link to download its PDF.
-
-    # Find all 'aqui' links within the page (we treat each as one message in 'Mensajes no leídos').
-    links_info = []
-    for frame in _iter_frames(page):
-        try:
-            links = frame.locator("a:has-text('aqui')")
-            count = links.count()
-            for i in range(count):
-                link = links.nth(i)
-                label_text = ""
-                try:
-                    # Get the text of the closest row/container that holds the message label.
-                    container = link.locator("xpath=ancestor::tr[1]")
-                    if container.count() == 0:
-                        container = link.locator("xpath=ancestor::*[1]")
-                    if container.count() > 0:
-                        label_text = (container.first.inner_text() or "").strip()
-                except Exception:
-                    label_text = ""
-                links_info.append((frame, link, label_text))
-        except Exception:
-            continue
-
-    if not links_info:
-        logging.info("Mis comunicados: no 'aqui' links found under 'Mensajes no leídos' (no unread messages).")
-        logging.info(">>> MESSAGES IN MIS COMUNICADOS: 0 messages found <<<")
-        return
-
-    logging.info("Mis comunicados: found %d unread message(s) with 'aqui' link.", len(links_info))
-
-    # Download PDFs for each unread message.
-    # The download directory is obtained from the config (stored in _run_context['download_dir'] via cfg).
+    # Get download directory from run context
     download_dir = None
     if _run_context:
         download_dir = _run_context.get("download_dir")
 
-    for idx, (frame, link, label_text) in enumerate(links_info, start=1):
-        safe_label = " ".join(label_text.split()) if label_text else "(sin texto)"
-        logging.info("Mis comunicados mensaje %d etiqueta: %s", idx, safe_label)
-        try:
-            with frame.page.expect_download() as dl_info:
-                link.click()
-            download = dl_info.value
-            suggested = download.suggested_filename or f"comunicado_{idx}.pdf"
-            if download_dir:
-                target_path = Path(download_dir) / suggested
-            else:
-                target_path = SCRIPT_DIR / suggested
-            download.save_as(str(target_path))
-            logging.info("Mis comunicados mensaje %d: PDF descargado en %s", idx, target_path)
-        except Exception as e:
-            logging.warning("Mis comunicados mensaje %d: error al descargar PDF: %s", idx, e)
-
-    logging.info(">>> MESSAGES IN MIS COMUNICADOS: %d messages found <<<", len(links_info))
+    # Process "Mensajes no leídos" section
+    logging.info("")
+    logging.info("----- Mensajes no leídos -----")
+    unread_count, unread_no_info = _process_comunicados_section(
+        page, "Mensajes no leídos", "Mis comunicados (no leídos)", download_dir
+    )
+    
+    # Process "Mensajes leídos" section
+    logging.info("")
+    logging.info("----- Mensajes leídos -----")
+    read_count, read_no_info = _process_comunicados_section(
+        page, "Mensajes leídos", "Mis comunicados (leídos)", download_dir
+    )
+    
+    # Log summaries
+    logging.info("")
+    if unread_no_info:
+        logging.info(">>> UNREAD MESSAGES IN MIS COMUNICADOS: 0 messages found (No existe información) <<<")
+    else:
+        logging.info(">>> UNREAD MESSAGES IN MIS COMUNICADOS: %d messages found <<<", unread_count)
+    
+    if read_no_info:
+        logging.info(">>> READ MESSAGES IN MIS COMUNICADOS: 0 messages found (No existe información) <<<")
+    else:
+        logging.info(">>> READ MESSAGES IN MIS COMUNICADOS: %d messages found <<<", read_count)
+    
+    logging.info(">>> TOTAL MESSAGES IN MIS COMUNICADOS: %d unread, %d read <<<", unread_count, read_count)
 
 
 def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str) -> bool:
