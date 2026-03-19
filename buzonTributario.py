@@ -352,7 +352,6 @@ def login_buzon(
     if not _try_click(page, enviar_selectors):
         raise RuntimeError("Could not find Enviar button on SAT Buzón page")
     logging.info("Phase 1: [%.2fs] Enviar pressed", _elapsed())
-    _run_context["logged_in"] = True
     page.wait_for_timeout(1000)
     _check_sat_500(page)
 
@@ -421,8 +420,10 @@ def login_buzon(
 
     # Log successful login
     if detected_name:
+        _run_context["logged_in"] = True
         logging.info("Phase 1: [%.2fs] >>> LOGIN SUCCESSFUL: Buzón Tributario de %s <<<", _elapsed(), detected_name)
     else:
+        _run_context["logged_in"] = True
         logging.info("Phase 1: [%.2fs] >>> LOGIN SUCCESSFUL: Buzón Tributario de (name not extracted) <<<", _elapsed())
 
 
