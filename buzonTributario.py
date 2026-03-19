@@ -12,6 +12,7 @@ Current modes (local only, no API yet):
 import argparse
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -78,6 +79,9 @@ def load_buzon_config(config_path: str | None) -> dict:
     section_500_retry_max = raw.get("section_500_retry_max", 2)
     section_500_retry_wait_seconds = raw.get("section_500_retry_wait_seconds", 10)
 
+    # Login verification max wait (safety limit to prevent infinite loop)
+    login_max_wait_seconds = raw.get("login_max_wait_seconds", 120)
+
     return {
         "portal_url": portal_url,
         "cer_path": cer_path,
@@ -87,6 +91,7 @@ def load_buzon_config(config_path: str | None) -> dict:
         "download_dir": str(download_dir_path),
         "section_500_retry_max": section_500_retry_max,
         "section_500_retry_wait_seconds": section_500_retry_wait_seconds,
+        "login_max_wait_seconds": login_max_wait_seconds,
         "raw": raw,
         "config_path": str(cfg_path),
     }
@@ -259,9 +264,16 @@ def _navigate_section_with_retry(
             raise RuntimeError(msg)
 
 
-def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTAL_URL) -> None:
+def login_buzon(
+    page,
+    efirma: dict,
+    mapping: dict,
+    base_url: str = DEFAULT_PORTAL_URL,
+    login_max_wait_seconds: int = 120,
+) -> None:
     """
     Minimal login flow for SAT Buzón using e.firma, using selectors from mapping.
+    Waits until 'Buzón Tributario de' pattern is detected to confirm successful login.
     """
     t0 = time.perf_counter()
 
@@ -321,31 +333,59 @@ def login_buzon(page, efirma: dict, mapping: dict, base_url: str = DEFAULT_PORTA
     _check_sat_500(page)
 
     # Wait for post-login Buzón page to fully load before any navigation.
-    # Similar to sat_declaration_filler: poll URL/body until expected pattern or timeout.
-    logging.info("Phase 1: [%.2fs] waiting for Buzón post-login page...", _elapsed())
-    post_login_timeout_ms = 8000
-    poll_ms = 150
-    t_end = time.perf_counter() + (post_login_timeout_ms / 1000.0)
+    # Poll continuously until "Buzón Tributario de" pattern is detected.
+    logging.info("Phase 1: [%.2fs] waiting for login confirmation (Buzón Tributario de)...", _elapsed())
+    poll_ms = 500
+    progress_interval = 10  # Log progress every 10 seconds
+    last_progress_log = time.perf_counter()
+    max_wait_end = time.perf_counter() + login_max_wait_seconds
     expected_pat = "buzón tributario de"
-    while time.perf_counter() < t_end:
+    login_confirmed = False
+    detected_name = ""
+
+    while time.perf_counter() < max_wait_end:
         page.wait_for_timeout(poll_ms)
+
+        # Log progress every 10 seconds
+        if time.perf_counter() - last_progress_log >= progress_interval:
+            logging.info("Phase 1: [%.2fs] still waiting for login confirmation...", _elapsed())
+            last_progress_log = time.perf_counter()
+
         try:
-            url = (page.url or "").lower()
-            if "/buzon" in url:
-                logging.info("Phase 1: [%.2fs] Buzón URL detected: %s", _elapsed(), url)
-                break
-            # Fallback: check body text for the header "Buzón Tributario de"
+            # Check body text for "Buzón Tributario de [Name]"
             for frame in _iter_frames(page):
                 try:
-                    body = (frame.locator("body").inner_text(timeout=500) or "").lower()
+                    body = frame.locator("body").inner_text(timeout=1000) or ""
+                    body_lower = body.lower()
                 except Exception:
                     continue
-                if expected_pat in body:
-                    logging.info("Phase 1: [%.2fs] Buzón header detected in body text", _elapsed())
-                    t_end = time.perf_counter()  # Force exit
+
+                if expected_pat in body_lower:
+                    # Extract the user's name from the pattern
+                    match = re.search(r"buzón tributario de\s+([^\n\r]+)", body, re.IGNORECASE)
+                    if match:
+                        detected_name = match.group(1).strip()
+                    login_confirmed = True
                     break
+
+            if login_confirmed:
+                break
         except Exception:
             continue
+
+    if not login_confirmed:
+        msg = (
+            f"Login verification failed: 'Buzón Tributario de' pattern not detected "
+            f"after {login_max_wait_seconds} seconds. Login may have failed."
+        )
+        logging.error(msg)
+        raise RuntimeError(msg)
+
+    # Log successful login
+    if detected_name:
+        logging.info("Phase 1: [%.2fs] >>> LOGIN SUCCESSFUL: Buzón Tributario de %s <<<", _elapsed(), detected_name)
+    else:
+        logging.info("Phase 1: [%.2fs] >>> LOGIN SUCCESSFUL: Buzón Tributario de (name not extracted) <<<", _elapsed())
 
 
 def open_mis_expedientes_menu(page) -> None:
@@ -979,7 +1019,13 @@ def run_buzon_login(config_path: str | None, mapping_path: str | None, mode: str
                 context = browser.new_context(accept_downloads=True)
                 page = context.new_page()
                 try:
-                    login_buzon(page, efirma, mapping, base_url=portal_url)
+                    login_buzon(
+                        page,
+                        efirma,
+                        mapping,
+                        base_url=portal_url,
+                        login_max_wait_seconds=cfg["login_max_wait_seconds"],
+                    )
                     # Navigation per mode:
                     # - test-login: login only (no navigation)
                     # - test-documentos: Mis expedientes -> Mis documentos (Cobranza -> Líneas de captura -> read table)
