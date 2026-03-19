@@ -14,6 +14,7 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import re
+import unicodedata
 import sys
 import time
 from pathlib import Path
@@ -232,16 +233,19 @@ def _detect_efirma_invalid(page) -> bool:
     Detect the SAT message for invalid/expired E.FIRMA.
     If present, we should not retry login.
     """
-    # Exact message seen in SAT UI (case-insensitive); we match substring to be resilient.
-    pat = "no se puede acceder al aplicativo porque su e.firma no esta vigente"
-    text = ""
+    # Exact message seen in SAT UI (case-insensitive); we strip diacritics so "está" / "esta" both match.
+    pat = "no se puede acceder al aplicativo porque su e.firma no está vigente".lower()
+    pat_norm = unicodedata.normalize("NFD", pat).encode("ascii", "ignore").decode("ascii")
+
+    text_norm = ""
     for frame in _iter_frames(page):
         try:
             body = (frame.locator("body").inner_text(timeout=1000) or "").lower()
-            text += "\n" + body
+            body_norm = unicodedata.normalize("NFD", body).encode("ascii", "ignore").decode("ascii")
+            text_norm += "\n" + body_norm
         except Exception:
             continue
-    return pat in text
+    return pat_norm in text_norm
 
 
 def _navigate_section_with_retry(
@@ -352,15 +356,16 @@ def login_buzon(
     if not _try_click(page, enviar_selectors):
         raise RuntimeError("Could not find Enviar button on SAT Buzón page")
     logging.info("Phase 1: [%.2fs] Enviar pressed", _elapsed())
-    page.wait_for_timeout(1000)
-    _check_sat_500(page)
-
-    # If E.FIRMA is not valid/expired, SAT shows a specific blocking message.
+    # Check E.FIRMA validity shortly after pressing Enviar (helps fail-fast).
+    page.wait_for_timeout(500)
+    logging.info("Phase 1: [%.2fs] checking E.FIRMA validity after 500ms...", _elapsed())
     if _detect_efirma_invalid(page):
         msg = "E_FIRMA_INVALID: No se puede acceder al aplicativo porque su E.FIRMA no está vigente"
         logging.error(msg)
         _run_context["efirma_invalid"] = True
         raise RuntimeError(msg)
+
+    _check_sat_500(page)
 
     # Wait for post-login Buzón page to fully load before any navigation.
     # Poll continuously until "Buzón Tributario de" pattern is detected.
