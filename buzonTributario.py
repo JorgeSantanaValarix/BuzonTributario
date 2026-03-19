@@ -610,6 +610,170 @@ def read_lineas_de_captura_table(page) -> None:
     logging.info(">>> MESSAGES IN MIS DOCUMENTOS (Líneas de captura): %d messages found <<<", len(rows_data))
 
 
+def _sanitize_filename_part(part: str) -> str:
+    """Make a string safe for Windows filenames."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", (part or "").strip()).strip("_") or "file"
+
+
+def _download_notification_document_option(
+    frame,
+    documentos_cell,
+    option_regex: str,
+    option_label: str,
+    option_slug: str,
+    folio_key: str,
+    download_dir: str | None,
+    row_idx: int,
+) -> tuple[bool, bool]:
+    """
+    Return (found, downloaded_ok).
+    Uses a scoped search inside documentos_cell first, then falls back to global frame search.
+    """
+    # 1) Scoped search in the same row's Documentos cell.
+    option_loc = documentos_cell.locator(f"text=/{option_regex}/i")
+    option_el = None
+    if option_loc.count() > 0:
+        try:
+            if option_loc.first.is_visible(timeout=500):
+                option_el = option_loc.first
+        except Exception:
+            option_el = None
+
+    # 2) Fallback: global search within the frame.
+    if option_el is None:
+        option_loc2 = frame.locator(f"text=/{option_regex}/i")
+        if option_loc2.count() > 0:
+            try:
+                if option_loc2.first.is_visible(timeout=500):
+                    option_el = option_loc2.first
+            except Exception:
+                option_el = None
+
+    if option_el is None:
+        logging.info(
+            "Mis notificaciones row %d: option '%s' not present; skipping.",
+            row_idx,
+            option_label,
+        )
+        return (False, False)
+
+    # Click option and save download (if it triggers a file download).
+    try:
+        with frame.page.expect_download(timeout=10000) as dl_info:
+            option_el.click()
+        download = dl_info.value
+
+        suggested = download.suggested_filename or f"{option_slug}.pdf"
+        # Ensure pdf extension if missing (best-effort).
+        if "." not in suggested:
+            suggested = suggested + ".pdf"
+
+        folio_part = _sanitize_filename_part(folio_key or "unknown_folio")
+        option_part = _sanitize_filename_part(option_slug)
+        base_name = f"{folio_part}_{option_part}_"
+
+        target_filename = f"{base_name}{suggested}"
+        if download_dir:
+            target_path = Path(download_dir) / target_filename
+        else:
+            target_path = SCRIPT_DIR / target_filename
+
+        download.save_as(str(target_path))
+        logging.info(
+            "Mis notificaciones row %d: downloaded '%s' -> %s",
+            row_idx,
+            option_label,
+            target_path,
+        )
+        return (True, True)
+    except Exception as e:
+        logging.warning(
+            "Mis notificaciones row %d: error downloading '%s': %s",
+            row_idx,
+            option_label,
+            e,
+        )
+        return (True, False)
+
+
+def _click_ver_and_download_all_options_for_row(
+    frame,
+    documentos_cell,
+    folio_key: str,
+    download_dir: str | None,
+    row_idx: int,
+) -> dict[str, tuple[int, int]]:
+    """
+    Download all 3 Documentos options for one row.
+
+    Returns dict option_slug -> (found_count, downloaded_ok_count)
+    """
+    option_specs = [
+        ("Aviso de notificación", "aviso_de_notificacion", r"Aviso de notificaci[oó]n"),
+        ("Acto administrativo", "acto_administrativo", r"Acto administrativo"),
+        ("Acuse de notificación", "acuse_de_notificacion", r"Acuse de notificaci[oó]n"),
+    ]
+    results: dict[str, tuple[int, int]] = {}
+    for _, option_slug, _ in option_specs:
+        results[option_slug] = (0, 0)
+
+    ver_selectors = [
+        r"text=/\bVer\b/i",
+        "button:has-text('Ver')",
+        "a:has-text('Ver')",
+        "[role='button']:has-text('Ver')",
+    ]
+
+    ver_el = None
+    for sel in ver_selectors:
+        try:
+            cand = documentos_cell.locator(sel)
+            if cand.count() > 0 and cand.first.is_visible(timeout=500):
+                ver_el = cand.first
+                break
+        except Exception:
+            continue
+
+    if ver_el is None:
+        logging.info(
+            "Mis notificaciones row %d: Documentos Ver control not found; skipping downloads.",
+            row_idx,
+        )
+        return results
+
+    logging.info(
+        "Mis notificaciones row %d: Documentos Ver control found; trying downloads...",
+        row_idx,
+    )
+
+    for option_label, option_slug, option_regex in option_specs:
+        # Click Ver again per option to ensure dropdown/menu is open.
+        try:
+            ver_el.click()
+        except Exception:
+            # If clicking Ver fails, we still try to locate the option and download.
+            pass
+        frame.page.wait_for_timeout(300)
+
+        found, downloaded_ok = _download_notification_document_option(
+            frame=frame,
+            documentos_cell=documentos_cell,
+            option_regex=option_regex,
+            option_label=option_label,
+            option_slug=option_slug,
+            folio_key=folio_key,
+            download_dir=download_dir,
+            row_idx=row_idx,
+        )
+        prev_found, prev_dl = results[option_slug]
+        results[option_slug] = (
+            prev_found + (1 if found else 0),
+            prev_dl + (1 if downloaded_ok else 0),
+        )
+
+    return results
+
+
 def read_notificaciones_table(page) -> None:
     """
     Read 'Mis notificaciones' table.
@@ -672,6 +836,12 @@ def read_notificaciones_table(page) -> None:
     # Step 3: Read table rows (headers: Folio del acto administrativo, Autoridad emisora, etc.).
     logging.info("Mis notificaciones Step 3: Reading table rows...")
     rows_data: list[dict] = []
+    table_frame = None
+    trs_locator = None
+    headers: list[str] = []
+    doc_col_idx: int | None = None
+    folio_col_idx: int = 0
+
     for frame in _iter_frames(page):
         try:
             table = frame.locator("table").first
@@ -681,18 +851,37 @@ def read_notificaciones_table(page) -> None:
             row_count = trs.count()
             if row_count <= 1:
                 continue
+
             headers = [h.inner_text().strip() for h in trs.nth(0).locator("th, td").all()]
             logging.info("Mis notificaciones Step 3 output: Table headers: %s", headers)
+
+            doc_idx = None
+            folio_idx = None
+            for idx, h in enumerate(headers):
+                h_low = (h or "").lower()
+                if doc_idx is None and "documentos" in h_low:
+                    doc_idx = idx
+                if folio_idx is None and "folio del acto" in h_low:
+                    folio_idx = idx
+
+            doc_col_idx = doc_idx
+            folio_col_idx = folio_idx if folio_idx is not None else 0
+            table_frame = frame
+            trs_locator = trs
+
             for i in range(1, row_count):
-                tds = trs.nth(i).locator("td").all()
-                if not tds:
-                    continue
-                values = [td.inner_text().strip() for td in tds]
+                row_tr = trs.nth(i)
+                row_tds = row_tr.locator("td")
+                tds_count = row_tds.count()
+                values = []
+                for idx in range(min(tds_count, len(headers))):
+                    values.append(row_tds.nth(idx).inner_text().strip())
                 row = {}
                 for idx, val in enumerate(values):
                     key = headers[idx] if idx < len(headers) and headers[idx] else f"col_{idx}"
                     row[key] = val
                 rows_data.append(row)
+
             break
         except Exception:
             continue
@@ -713,9 +902,65 @@ def read_notificaciones_table(page) -> None:
         return
 
     logging.info("Mis notificaciones Step 3 output: Found %d row(s).", len(rows_data))
+    download_dir = None
+    if _run_context:
+        download_dir = _run_context.get("download_dir")
+
+    downloads_totals: dict[str, tuple[int, int]] = {
+        "aviso_de_notificacion": (0, 0),
+        "acto_administrativo": (0, 0),
+        "acuse_de_notificacion": (0, 0),
+    }
+
+    if doc_col_idx is None:
+        logging.info("Mis notificaciones: 'Documentos' column not found; will not download PDFs.")
+
     for i, row in enumerate(rows_data, start=1):
         logging.info("Mis notificaciones row %d: %s", i, row)
+
+        if doc_col_idx is None or table_frame is None or trs_locator is None:
+            continue
+
+        # Extract folio key for naming.
+        folio_key = ""
+        if 0 <= folio_col_idx < len(headers):
+            folio_header = headers[folio_col_idx]
+            folio_key = row.get(folio_header, "")
+        if not folio_key:
+            folio_key = next(iter(row.values()), "")
+
+        row_tr = trs_locator.nth(i)
+        row_tds = row_tr.locator("td")
+        if row_tds.count() <= doc_col_idx:
+            logging.info(
+                "Mis notificaciones row %d: Documentos cell not available (td count too small); skipping downloads.",
+                i,
+            )
+            continue
+
+        documentos_cell = row_tds.nth(doc_col_idx)
+        row_results = _click_ver_and_download_all_options_for_row(
+            frame=table_frame,
+            documentos_cell=documentos_cell,
+            folio_key=folio_key,
+            download_dir=download_dir,
+            row_idx=i,
+        )
+
+        for option_slug, (found_c, dl_ok_c) in row_results.items():
+            prev_found, prev_dl = downloads_totals.get(option_slug, (0, 0))
+            downloads_totals[option_slug] = (prev_found + found_c, prev_dl + dl_ok_c)
+
     logging.info(">>> MESSAGES IN MIS NOTIFICACIONES: %d messages found <<<", len(rows_data))
+    logging.info(
+        ">>> MIS NOTIFICACIONES DOWNLOADS: Aviso=%d/%d, Acto=%d/%d, Acuse=%d/%d <<<",
+        downloads_totals["aviso_de_notificacion"][0],
+        downloads_totals["aviso_de_notificacion"][1],
+        downloads_totals["acto_administrativo"][0],
+        downloads_totals["acto_administrativo"][1],
+        downloads_totals["acuse_de_notificacion"][0],
+        downloads_totals["acuse_de_notificacion"][1],
+    )
 
 
 def _find_section_container(page, section_title: str):
